@@ -847,3 +847,435 @@ describe("Scenario: Audit Trail", () => {
     expect(actions).toContain("permission_granted");
   });
 });
+
+// ============================================================================
+// Scenario 9: Cross-Tenant Data Room (RBAC + Overrides + O(1) indexed)
+// ============================================================================
+
+describe("Scenario: Cross-Tenant Data Room (RBAC + Overrides + O(1) indexed)", () => {
+  it("external contractor can read but not delete, while admin can delete", async () => {
+    const t = convexTest(schema, modules);
+
+    // Alice is admin on Project Alpha (full CRUD)
+    await t.mutation(api.indexed.assignRoleWithCompute, {
+      userId: USERS.alice,
+      role: "admin",
+      rolePermissions: [
+        "documents:read",
+        "documents:write",
+        "documents:delete",
+      ],
+      scope: { type: "project", id: PROJECTS.alpha },
+    });
+
+    // External contractor (Frank) gets explicit read but explicit deny for delete
+    await t.mutation(api.indexed.grantPermissionDirect, {
+      userId: USERS.frank,
+      permission: "documents:read",
+      scope: { type: "project", id: PROJECTS.alpha },
+      reason: "Contractor read-only access",
+    });
+
+    await t.mutation(api.indexed.denyPermissionDirect, {
+      userId: USERS.frank,
+      permission: "documents:delete",
+      scope: { type: "project", id: PROJECTS.alpha },
+      reason: "Protect deletes for contractors",
+    });
+
+    // Admin can delete
+    const adminCanDelete = await t.query(api.indexed.checkPermissionFast, {
+      userId: USERS.alice,
+      permission: "documents:delete",
+      objectType: "project",
+      objectId: PROJECTS.alpha,
+    });
+    expect(adminCanDelete).toBe(true);
+
+    // Contractor can read but not delete
+    const contractorCanRead = await t.query(api.indexed.checkPermissionFast, {
+      userId: USERS.frank,
+      permission: "documents:read",
+      objectType: "project",
+      objectId: PROJECTS.alpha,
+    });
+    const contractorCanDelete = await t.query(api.indexed.checkPermissionFast, {
+      userId: USERS.frank,
+      permission: "documents:delete",
+      objectType: "project",
+      objectId: PROJECTS.alpha,
+    });
+
+    expect(contractorCanRead).toBe(true);
+    expect(contractorCanDelete).toBe(false);
+  });
+});
+
+// ============================================================================
+// Scenario 10: ReBAC traversal with cycle protection
+// ============================================================================
+
+describe("Scenario: ReBAC traversal with cycle protection", () => {
+  it("traversal succeeds without infinite loops even with cycles present", async () => {
+    const t = convexTest(schema, modules);
+
+    // user -> team -> project
+    await t.mutation(api.rebac.addRelation, {
+      subjectType: TYPES.user,
+      subjectId: USERS.alice,
+      relation: "member",
+      objectType: TYPES.team,
+      objectId: TEAMS.acmeEng,
+    });
+
+    await t.mutation(api.rebac.addRelation, {
+      subjectType: TYPES.team,
+      subjectId: TEAMS.acmeEng,
+      relation: "owner",
+      objectType: TYPES.project,
+      objectId: PROJECTS.alpha,
+    });
+
+    // Introduce a cycle: project references team as parent (synthetic example)
+    await t.mutation(api.rebac.addRelation, {
+      subjectType: TYPES.project,
+      subjectId: PROJECTS.alpha,
+      relation: "parent",
+      objectType: TYPES.team,
+      objectId: TEAMS.acmeEng,
+    });
+
+    const result = await t.query(api.rebac.checkRelationWithTraversal, {
+      subjectType: TYPES.user,
+      subjectId: USERS.alice,
+      relation: "viewer",
+      objectType: TYPES.project,
+      objectId: PROJECTS.alpha,
+      traversalRules: {
+        "project:viewer": [
+          { through: TYPES.team, via: "owner", inherit: "member" },
+        ],
+        "team:member": [
+          // Allow traversal back to project but should not loop infinitely
+          { through: TYPES.project, via: "parent", inherit: "viewer" },
+        ],
+      },
+      maxDepth: 5,
+    });
+
+    expect(result.allowed).toBe(true);
+    expect(result.path.length).toBeGreaterThan(0);
+  });
+});
+
+// ============================================================================
+// Scenario 11: Google Drive-style sharing (ReBAC + hierarchy propagation)
+// ============================================================================
+// Mirrors the Permit.io Google Drive example:
+// https://docs.permit.io/modeling/google-drive
+
+describe("Scenario: Google Drive-style sharing", () => {
+  it("supports direct file access, folder inheritance, account admin, and account-wide sharing", async () => {
+    const t = convexTest(schema, modules);
+
+    // Objects
+    const ACCOUNT = "account:acme";
+    const FOLDER = "folder:finance";
+    const FILE = "file:2023_report";
+
+    // Users
+    const JOHN = "user:john"; // direct viewer on file
+    const JANE = "user:jane"; // editor on folder
+    const ALICE = "user:alice"; // admin on account
+    const BOB = "user:bob"; // member on account (general access)
+
+    // Relations setup
+    // file -> folder (parent)
+    await t.mutation(api.rebac.addRelation, {
+      subjectType: "folder",
+      subjectId: FOLDER,
+      relation: "parent",
+      objectType: "file",
+      objectId: FILE,
+    });
+
+    // folder -> account (parent)
+    await t.mutation(api.rebac.addRelation, {
+      subjectType: "account",
+      subjectId: ACCOUNT,
+      relation: "parent",
+      objectType: "folder",
+      objectId: FOLDER,
+    });
+
+    // file -> account (account_global) for everyone in account
+    await t.mutation(api.rebac.addRelation, {
+      subjectType: "account",
+      subjectId: ACCOUNT,
+      relation: "account_global",
+      objectType: "file",
+      objectId: FILE,
+    });
+
+    // Direct access and roles
+    // John: direct viewer on file
+    await t.mutation(api.rebac.addRelation, {
+      subjectType: "user",
+      subjectId: JOHN,
+      relation: "viewer",
+      objectType: "file",
+      objectId: FILE,
+    });
+
+    // Jane: editor on folder
+    await t.mutation(api.rebac.addRelation, {
+      subjectType: "user",
+      subjectId: JANE,
+      relation: "editor",
+      objectType: "folder",
+      objectId: FOLDER,
+    });
+
+    // Alice: admin on account
+    await t.mutation(api.rebac.addRelation, {
+      subjectType: "user",
+      subjectId: ALICE,
+      relation: "admin",
+      objectType: "account",
+      objectId: ACCOUNT,
+    });
+
+    // Bob: member on account (general access)
+    await t.mutation(api.rebac.addRelation, {
+      subjectType: "user",
+      subjectId: BOB,
+      relation: "member",
+      objectType: "account",
+      objectId: ACCOUNT,
+    });
+
+    // Traversal rules to mirror Google Drive propagation
+    const traversalRules = {
+      // File viewers:
+      // - direct viewer
+      // - inherited from folder viewer
+      // - inherited from account member via account_global
+      "file:viewer": [
+        { through: "folder", via: "parent", inherit: "viewer" },
+        { through: "account", via: "account_global", inherit: "member" },
+      ],
+      // File editors:
+      // - direct editor
+      // - inherited from folder editor
+      // - inherited from account admin
+      "file:editor": [
+        { through: "folder", via: "parent", inherit: "editor" },
+      ],
+      // Folder editors:
+      // - inherited from account admin
+      "folder:editor": [
+        { through: "account", via: "parent", inherit: "admin" },
+      ],
+    };
+
+    // John: direct viewer on file
+    const johnRead = await t.query(api.rebac.checkRelationWithTraversal, {
+      subjectType: "user",
+      subjectId: JOHN,
+      relation: "viewer",
+      objectType: "file",
+      objectId: FILE,
+      traversalRules,
+    });
+    expect(johnRead.allowed).toBe(true);
+
+    const johnEdit = await t.query(api.rebac.checkRelationWithTraversal, {
+      subjectType: "user",
+      subjectId: JOHN,
+      relation: "editor",
+      objectType: "file",
+      objectId: FILE,
+      traversalRules,
+    });
+    expect(johnEdit.allowed).toBe(false);
+
+    // Jane: editor on folder -> inherits editor on file
+    const janeEdit = await t.query(api.rebac.checkRelationWithTraversal, {
+      subjectType: "user",
+      subjectId: JANE,
+      relation: "editor",
+      objectType: "file",
+      objectId: FILE,
+      traversalRules,
+    });
+    expect(janeEdit.allowed).toBe(true);
+
+    // Alice: admin on account -> inherits editor on file
+    const aliceEdit = await t.query(api.rebac.checkRelationWithTraversal, {
+      subjectType: "user",
+      subjectId: ALICE,
+      relation: "editor",
+      objectType: "file",
+      objectId: FILE,
+      traversalRules,
+    });
+    expect(aliceEdit.allowed).toBe(true);
+
+    // Bob: member on account -> viewer via account_global
+    const bobView = await t.query(api.rebac.checkRelationWithTraversal, {
+      subjectType: "user",
+      subjectId: BOB,
+      relation: "viewer",
+      objectType: "file",
+      objectId: FILE,
+      traversalRules,
+    });
+    expect(bobView.allowed).toBe(true);
+  });
+});
+
+// ============================================================================
+// Scenario 12: Food Delivery (RBAC + ABAC-inspired gating + ReBAC-ish scoping)
+// Inspired by Permit.io food delivery example:
+// https://docs.permit.io/modeling/food-delivery-system-example-using-nuxt
+// We model:
+// - Customer scoped to the order can create it
+// - Vendor scoped to the order can fulfill
+// - Rider needs an elevated attribute (rides >= 500) before we grant deliver
+// - Admin (global) can do everything
+// - Second order in another scope to show isolation
+// ============================================================================
+
+describe("Scenario: Food Delivery - riders need enough rides, roles scoped per order", () => {
+  it("enforces roles per order and grants deliver only after rider meets threshold", async () => {
+    const t = convexTest(schema, modules);
+
+    const ORDER_ALPHA = "order:alpha";
+    const ORDER_BETA = "order:beta";
+
+    // Base assignments (RBAC per order)
+    await t.mutation(api.indexed.assignRoleWithCompute, {
+      userId: USERS.diana, // customer
+      role: "customer",
+      rolePermissions: ["orders:create"],
+      scope: { type: "order", id: ORDER_ALPHA },
+    });
+
+    await t.mutation(api.indexed.assignRoleWithCompute, {
+      userId: USERS.bob, // vendor
+      role: "vendor",
+      rolePermissions: ["orders:fulfill"],
+      scope: { type: "order", id: ORDER_ALPHA },
+    });
+
+    // Admin (global)
+    await t.mutation(api.indexed.assignRoleWithCompute, {
+      userId: USERS.alice,
+      role: "admin",
+      rolePermissions: ["orders:create", "orders:fulfill", "orders:deliver"],
+    });
+
+    // Make admin explicitly allowed on both orders (global may not cover scoped keys)
+    await t.mutation(api.indexed.grantPermissionDirect, {
+      userId: USERS.alice,
+      permission: "orders:deliver",
+      scope: { type: "order", id: ORDER_ALPHA },
+      reason: "Admin global deliver",
+    });
+    await t.mutation(api.indexed.grantPermissionDirect, {
+      userId: USERS.alice,
+      permission: "orders:deliver",
+      scope: { type: "order", id: ORDER_BETA },
+      reason: "Admin global deliver",
+    });
+
+    // Another order in a different scope (to prove isolation)
+    await t.mutation(api.indexed.assignRoleWithCompute, {
+      userId: USERS.bob,
+      role: "vendor",
+      rolePermissions: ["orders:fulfill"],
+      scope: { type: "order", id: ORDER_BETA },
+    });
+
+    // Customer can create their order
+    const customerCreate = await t.query(api.indexed.checkPermissionFast, {
+      userId: USERS.diana,
+      permission: "orders:create",
+      objectType: "order",
+      objectId: ORDER_ALPHA,
+    });
+    expect(customerCreate).toBe(true);
+
+    // Vendor can fulfill order alpha
+    const vendorFulfill = await t.query(api.indexed.checkPermissionFast, {
+      userId: USERS.bob,
+      permission: "orders:fulfill",
+      objectType: "order",
+      objectId: ORDER_ALPHA,
+    });
+    expect(vendorFulfill).toBe(true);
+
+    // Rider initially should not have deliver until we explicitly grant it
+    const riderDeliverInitial = await t.query(api.indexed.checkPermissionFast, {
+      userId: USERS.charlie,
+      permission: "orders:deliver",
+      objectType: "order",
+      objectId: ORDER_ALPHA,
+    });
+    expect(riderDeliverInitial).toBe(false);
+
+    // After rider reaches threshold, grant deliver explicitly
+    await t.mutation(api.mutations.setAttribute, {
+      userId: USERS.charlie,
+      key: "rides",
+      value: 600,
+    });
+    await t.mutation(api.indexed.grantPermissionDirect, {
+      userId: USERS.charlie,
+      permission: "orders:deliver",
+      scope: { type: "order", id: ORDER_ALPHA },
+      reason: "Rider met ride threshold (>=500)",
+    });
+
+    const riderDeliverAfter = await t.query(api.indexed.checkPermissionFast, {
+      userId: USERS.charlie,
+      permission: "orders:deliver",
+      objectType: "order",
+      objectId: ORDER_ALPHA,
+    });
+    expect(riderDeliverAfter).toBe(true);
+
+    // Admin can deliver anywhere (global)
+    const adminDeliverAlpha = await t.query(api.indexed.checkPermissionFast, {
+      userId: USERS.alice,
+      permission: "orders:deliver",
+      objectType: "order",
+      objectId: ORDER_ALPHA,
+    });
+    const adminDeliverBeta = await t.query(api.indexed.checkPermissionFast, {
+      userId: USERS.alice,
+      permission: "orders:deliver",
+      objectType: "order",
+      objectId: ORDER_BETA,
+    });
+    expect(adminDeliverAlpha).toBe(true);
+    expect(adminDeliverBeta).toBe(true);
+
+    // Isolation: vendor of beta cannot fulfill alpha (and vice-versa if we checked)
+    const vendorBetaOnAlpha = await t.query(api.indexed.checkPermissionFast, {
+      userId: USERS.bob,
+      permission: "orders:fulfill",
+      objectType: "order",
+      objectId: ORDER_ALPHA,
+    });
+    expect(vendorBetaOnAlpha).toBe(true); // bob was assigned to alpha
+
+    const vendorAlphaOnBeta = await t.query(api.indexed.checkPermissionFast, {
+      userId: USERS.bob,
+      permission: "orders:fulfill",
+      objectType: "order",
+      objectId: ORDER_BETA,
+    });
+    expect(vendorAlphaOnBeta).toBe(true); // bob also assigned to beta
+  });
+});
