@@ -615,8 +615,9 @@ describe("Scenario: Users with Multiple Roles", () => {
 
     // Both roles should be sources for documents:read
     const readPerm = permissions.find((p: any) => p.permission === "documents:read");
-    expect(readPerm.sources).toContain("viewer");
-    expect(readPerm.sources).toContain("editor");
+    expect(readPerm).toBeDefined();
+    expect(readPerm!.sources).toContain("viewer");
+    expect(readPerm!.sources).toContain("editor");
   });
 });
 
