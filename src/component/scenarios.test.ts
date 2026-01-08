@@ -1,0 +1,848 @@
+/**
+ * Real-World Authorization Scenarios
+ *
+ * Comprehensive tests for multi-tenant SaaS authorization patterns.
+ * These tests simulate real production scenarios with:
+ * - Multiple organizations
+ * - Nested teams
+ * - Cross-org isolation
+ * - Complex permission hierarchies
+ * - Edge cases and security boundaries
+ */
+
+import { convexTest } from "convex-test";
+import { describe, expect, it, beforeEach } from "vitest";
+import schema from "./schema.js";
+import { api } from "./_generated/api.js";
+
+const modules = import.meta.glob("./**/*.ts");
+
+// ============================================================================
+// Test Data: Multi-Tenant SaaS Structure
+// ============================================================================
+
+/**
+ * Test Organization Structure:
+ *
+ * ACME Corp (org:acme)
+ * ├── Engineering Team (team:acme-eng)
+ * │   ├── alice (admin)
+ * │   └── bob (member)
+ * ├── Sales Team (team:acme-sales)
+ * │   └── charlie (member)
+ * └── Projects
+ *     ├── Project Alpha (project:alpha) - owned by Engineering
+ *     │   └── Document A1 (doc:a1)
+ *     └── Project Beta (project:beta) - owned by Sales
+ *         └── Document B1 (doc:b1)
+ *
+ * BetaCo (org:betaco)
+ * ├── Product Team (team:betaco-product)
+ * │   └── diana (admin)
+ * └── Projects
+ *     └── Project Gamma (project:gamma)
+ *         └── Document G1 (doc:g1)
+ *
+ * External Users (no org):
+ * - eve (contractor with explicit grants)
+ * - frank (no permissions)
+ */
+
+// User IDs (used as subjectId/userId)
+const USERS = {
+  alice: "alice",
+  bob: "bob",
+  charlie: "charlie",
+  diana: "diana",
+  eve: "eve",
+  frank: "frank",
+} as const;
+
+// Organization IDs (used as objectId with type: "org")
+const ORGS = {
+  acme: "acme",
+  betaco: "betaco",
+} as const;
+
+// Team IDs (used as objectId with type: "team")
+const TEAMS = {
+  acmeEng: "acme-eng",
+  acmeSales: "acme-sales",
+  betacoProduct: "betaco-product",
+} as const;
+
+// Project IDs (used as objectId with type: "project")
+const PROJECTS = {
+  alpha: "alpha",
+  beta: "beta",
+  gamma: "gamma",
+} as const;
+
+// Document IDs (used as objectId with type: "document")
+const DOCS = {
+  a1: "a1",
+  b1: "b1",
+  g1: "g1",
+} as const;
+
+// Object types for ReBAC
+const TYPES = {
+  user: "user",
+  org: "org",
+  team: "team",
+  project: "project",
+  document: "document",
+} as const;
+
+// ============================================================================
+// Scenario 1: Multi-Organization Isolation
+// ============================================================================
+
+describe("Scenario: Multi-Organization Isolation", () => {
+  it("users in different orgs cannot access each other's resources", async () => {
+    const t = convexTest(schema, modules);
+
+    // Setup: Alice is admin of ACME
+    await t.mutation(api.mutations.assignRole, {
+      userId: USERS.alice,
+      role: "admin",
+      scope: { type: "org", id: ORGS.acme },
+    });
+
+    // Setup: Diana is admin of BetaCo
+    await t.mutation(api.mutations.assignRole, {
+      userId: USERS.diana,
+      role: "admin",
+      scope: { type: "org", id: ORGS.betaco },
+    });
+
+    // Alice can access ACME
+    const aliceAcme = await t.query(api.queries.hasRole, {
+      userId: USERS.alice,
+      role: "admin",
+      scope: { type: "org", id: ORGS.acme },
+    });
+    expect(aliceAcme).toBe(true);
+
+    // Alice CANNOT access BetaCo
+    const aliceBetaco = await t.query(api.queries.hasRole, {
+      userId: USERS.alice,
+      role: "admin",
+      scope: { type: "org", id: ORGS.betaco },
+    });
+    expect(aliceBetaco).toBe(false);
+
+    // Diana can access BetaCo
+    const dianaBetaco = await t.query(api.queries.hasRole, {
+      userId: USERS.diana,
+      role: "admin",
+      scope: { type: "org", id: ORGS.betaco },
+    });
+    expect(dianaBetaco).toBe(true);
+
+    // Diana CANNOT access ACME
+    const dianaAcme = await t.query(api.queries.hasRole, {
+      userId: USERS.diana,
+      role: "admin",
+      scope: { type: "org", id: ORGS.acme },
+    });
+    expect(dianaAcme).toBe(false);
+  });
+
+  it("global roles do not grant access to scoped resources", async () => {
+    const t = convexTest(schema, modules);
+
+    // Alice has global viewer role
+    await t.mutation(api.mutations.assignRole, {
+      userId: USERS.alice,
+      role: "viewer",
+    });
+
+    // Alice has scoped admin role for ACME only
+    await t.mutation(api.mutations.assignRole, {
+      userId: USERS.alice,
+      role: "admin",
+      scope: { type: "org", id: ORGS.acme },
+    });
+
+    // Check: Alice is viewer globally
+    const isViewerGlobal = await t.query(api.queries.hasRole, {
+      userId: USERS.alice,
+      role: "viewer",
+    });
+    expect(isViewerGlobal).toBe(true);
+
+    // Check: Alice is admin of ACME specifically
+    const isAdminAcme = await t.query(api.queries.hasRole, {
+      userId: USERS.alice,
+      role: "admin",
+      scope: { type: "org", id: ORGS.acme },
+    });
+    expect(isAdminAcme).toBe(true);
+
+    // Check: Alice is NOT admin globally
+    const isAdminGlobal = await t.query(api.queries.hasRole, {
+      userId: USERS.alice,
+      role: "admin",
+    });
+    expect(isAdminGlobal).toBe(false);
+
+    // Check: Alice is NOT admin of BetaCo
+    const isAdminBetaco = await t.query(api.queries.hasRole, {
+      userId: USERS.alice,
+      role: "admin",
+      scope: { type: "org", id: ORGS.betaco },
+    });
+    expect(isAdminBetaco).toBe(false);
+  });
+});
+
+// ============================================================================
+// Scenario 2: Team-Based Access Control
+// ============================================================================
+
+describe("Scenario: Team-Based Access Control", () => {
+  it("team members inherit access to team resources via ReBAC", async () => {
+    const t = convexTest(schema, modules);
+
+    // Setup: Alice is member of Engineering team
+    await t.mutation(api.rebac.addRelation, {
+      subjectType: TYPES.user,
+      subjectId: USERS.alice,
+      relation: "member",
+      objectType: TYPES.team,
+      objectId: TEAMS.acmeEng,
+    });
+
+    // Setup: Engineering team owns Project Alpha
+    await t.mutation(api.rebac.addRelation, {
+      subjectType: TYPES.team,
+      subjectId: TEAMS.acmeEng,
+      relation: "owner",
+      objectType: TYPES.project,
+      objectId: PROJECTS.alpha,
+    });
+
+    // Check: Alice can view Project Alpha through traversal
+    const result = await t.query(api.rebac.checkRelationWithTraversal, {
+      subjectType: TYPES.user,
+      subjectId: USERS.alice,
+      relation: "viewer",
+      objectType: TYPES.project,
+      objectId: PROJECTS.alpha,
+      traversalRules: {
+        "project:viewer": [
+          { through: TYPES.team, via: "owner", inherit: "member" },
+        ],
+      },
+    });
+
+    expect(result.allowed).toBe(true);
+  });
+
+  it("users without team membership cannot access team resources", async () => {
+    const t = convexTest(schema, modules);
+
+    // Setup: Charlie is member of Sales team (not Engineering)
+    await t.mutation(api.rebac.addRelation, {
+      subjectType: TYPES.user,
+      subjectId: USERS.charlie,
+      relation: "member",
+      objectType: TYPES.team,
+      objectId: TEAMS.acmeSales,
+    });
+
+    // Setup: Engineering team owns Project Alpha
+    await t.mutation(api.rebac.addRelation, {
+      subjectType: TYPES.team,
+      subjectId: TEAMS.acmeEng,
+      relation: "owner",
+      objectType: TYPES.project,
+      objectId: PROJECTS.alpha,
+    });
+
+    // Check: Charlie CANNOT view Project Alpha
+    const result = await t.query(api.rebac.checkRelationWithTraversal, {
+      subjectType: TYPES.user,
+      subjectId: USERS.charlie,
+      relation: "viewer",
+      objectType: TYPES.project,
+      objectId: PROJECTS.alpha,
+      traversalRules: {
+        "project:viewer": [
+          { through: TYPES.team, via: "owner", inherit: "member" },
+        ],
+      },
+    });
+
+    expect(result.allowed).toBe(false);
+  });
+
+  it("team admins have elevated permissions on team resources", async () => {
+    const t = convexTest(schema, modules);
+
+    // Setup: Alice is admin of Engineering team
+    await t.mutation(api.rebac.addRelation, {
+      subjectType: TYPES.user,
+      subjectId: USERS.alice,
+      relation: "admin",
+      objectType: TYPES.team,
+      objectId: TEAMS.acmeEng,
+    });
+
+    // Setup: Bob is member of Engineering team
+    await t.mutation(api.rebac.addRelation, {
+      subjectType: TYPES.user,
+      subjectId: USERS.bob,
+      relation: "member",
+      objectType: TYPES.team,
+      objectId: TEAMS.acmeEng,
+    });
+
+    // Setup: Engineering team owns Project Alpha
+    await t.mutation(api.rebac.addRelation, {
+      subjectType: TYPES.team,
+      subjectId: TEAMS.acmeEng,
+      relation: "owner",
+      objectType: TYPES.project,
+      objectId: PROJECTS.alpha,
+    });
+
+    // Check: Alice (admin) can edit Project Alpha
+    const aliceEdit = await t.query(api.rebac.checkRelationWithTraversal, {
+      subjectType: TYPES.user,
+      subjectId: USERS.alice,
+      relation: "editor",
+      objectType: TYPES.project,
+      objectId: PROJECTS.alpha,
+      traversalRules: {
+        "project:editor": [
+          { through: TYPES.team, via: "owner", inherit: "admin" },
+        ],
+      },
+    });
+    expect(aliceEdit.allowed).toBe(true);
+
+    // Check: Bob (member) CANNOT edit Project Alpha
+    const bobEdit = await t.query(api.rebac.checkRelationWithTraversal, {
+      subjectType: TYPES.user,
+      subjectId: USERS.bob,
+      relation: "editor",
+      objectType: TYPES.project,
+      objectId: PROJECTS.alpha,
+      traversalRules: {
+        "project:editor": [
+          { through: TYPES.team, via: "owner", inherit: "admin" },
+        ],
+      },
+    });
+    expect(bobEdit.allowed).toBe(false);
+  });
+});
+
+// ============================================================================
+// Scenario 3: Nested Resource Hierarchy
+// ============================================================================
+
+describe("Scenario: Nested Resource Hierarchy (Org → Team → Project → Document)", () => {
+  it("permissions cascade through the hierarchy", async () => {
+    const t = convexTest(schema, modules);
+
+    // Setup the hierarchy:
+    // alice -> member -> acme-eng -> owner -> alpha -> contains -> a1
+
+    // Alice is member of Engineering
+    await t.mutation(api.rebac.addRelation, {
+      subjectType: TYPES.user,
+      subjectId: USERS.alice,
+      relation: "member",
+      objectType: TYPES.team,
+      objectId: TEAMS.acmeEng,
+    });
+
+    // Engineering owns Project Alpha
+    await t.mutation(api.rebac.addRelation, {
+      subjectType: TYPES.team,
+      subjectId: TEAMS.acmeEng,
+      relation: "owner",
+      objectType: TYPES.project,
+      objectId: PROJECTS.alpha,
+    });
+
+    // Project Alpha contains Document A1
+    await t.mutation(api.rebac.addRelation, {
+      subjectType: TYPES.project,
+      subjectId: PROJECTS.alpha,
+      relation: "parent",
+      objectType: TYPES.document,
+      objectId: DOCS.a1,
+    });
+
+    // Check: Alice can view Document A1 through 3-hop traversal
+    const result = await t.query(api.rebac.checkRelationWithTraversal, {
+      subjectType: TYPES.user,
+      subjectId: USERS.alice,
+      relation: "viewer",
+      objectType: TYPES.document,
+      objectId: DOCS.a1,
+      traversalRules: {
+        // Document viewer inherits from project viewer
+        "document:viewer": [
+          { through: TYPES.project, via: "parent", inherit: "viewer" },
+        ],
+        // Project viewer inherits from team member
+        "project:viewer": [
+          { through: TYPES.team, via: "owner", inherit: "member" },
+        ],
+      },
+      maxDepth: 5,
+    });
+
+    expect(result.allowed).toBe(true);
+    expect(result.path).toBeDefined();
+    // Verify the traversal path
+    expect(result.path!.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+// ============================================================================
+// Scenario 4: Permission Overrides & Exceptions
+// ============================================================================
+
+describe("Scenario: Permission Overrides & Exceptions", () => {
+  it("explicit deny overrides role-based permission", async () => {
+    const t = convexTest(schema, modules);
+
+    // Alice is admin with full access
+    await t.mutation(api.indexed.assignRoleWithCompute, {
+      userId: USERS.alice,
+      role: "admin",
+      rolePermissions: ["documents:read", "documents:write", "documents:delete"],
+    });
+
+    // But specifically denied delete on a sensitive document
+    await t.mutation(api.indexed.denyPermissionDirect, {
+      userId: USERS.alice,
+      permission: "documents:delete",
+      scope: { type: "document", id: "sensitive-doc" },
+      reason: "Compliance restriction",
+    });
+
+    // Alice can delete globally
+    const canDeleteGlobal = await t.query(api.indexed.checkPermissionFast, {
+      userId: USERS.alice,
+      permission: "documents:delete",
+    });
+    expect(canDeleteGlobal).toBe(true);
+
+    // But NOT the sensitive document
+    const canDeleteSensitive = await t.query(api.indexed.checkPermissionFast, {
+      userId: USERS.alice,
+      permission: "documents:delete",
+      objectType: "document",
+      objectId: "sensitive-doc",
+    });
+    expect(canDeleteSensitive).toBe(false);
+  });
+
+  it("temporary access grants with expiration", async () => {
+    const t = convexTest(schema, modules);
+
+    const now = Date.now();
+    const oneHourAgo = now - 3600000;
+    const oneHourLater = now + 3600000;
+
+    // Grant temporary access that has already expired
+    await t.mutation(api.indexed.grantPermissionDirect, {
+      userId: USERS.eve,
+      permission: "documents:read",
+      scope: { type: TYPES.project, id: PROJECTS.alpha },
+      reason: "Contractor access",
+      expiresAt: oneHourAgo, // Already expired
+    });
+
+    // Expired permission should be denied
+    const canReadExpired = await t.query(api.indexed.checkPermissionFast, {
+      userId: USERS.eve,
+      permission: "documents:read",
+      objectType: TYPES.project,
+      objectId: PROJECTS.alpha,
+    });
+    expect(canReadExpired).toBe(false);
+
+    // Grant access that expires in the future
+    await t.mutation(api.indexed.grantPermissionDirect, {
+      userId: USERS.eve,
+      permission: "documents:write",
+      scope: { type: TYPES.project, id: PROJECTS.alpha },
+      reason: "Contractor access",
+      expiresAt: oneHourLater, // Still valid
+    });
+
+    // Valid permission should be allowed
+    const canWrite = await t.query(api.indexed.checkPermissionFast, {
+      userId: USERS.eve,
+      permission: "documents:write",
+      objectType: TYPES.project,
+      objectId: PROJECTS.alpha,
+    });
+    expect(canWrite).toBe(true);
+  });
+
+  it("contractor with explicit grants but no org membership", async () => {
+    const t = convexTest(schema, modules);
+
+    // Eve has no roles or org membership
+    // But has specific grants for Project Alpha
+
+    await t.mutation(api.indexed.grantPermissionDirect, {
+      userId: USERS.eve,
+      permission: "documents:read",
+      scope: { type: TYPES.project, id: PROJECTS.alpha },
+      reason: "External contractor",
+    });
+
+    // Eve can read Project Alpha docs
+    const canRead = await t.query(api.indexed.checkPermissionFast, {
+      userId: USERS.eve,
+      permission: "documents:read",
+      objectType: TYPES.project,
+      objectId: PROJECTS.alpha,
+    });
+    expect(canRead).toBe(true);
+
+    // Eve CANNOT read Project Beta docs
+    const canReadBeta = await t.query(api.indexed.checkPermissionFast, {
+      userId: USERS.eve,
+      permission: "documents:read",
+      objectType: TYPES.project,
+      objectId: PROJECTS.beta,
+    });
+    expect(canReadBeta).toBe(false);
+
+    // Eve CANNOT write to Project Alpha (no write grant)
+    const canWrite = await t.query(api.indexed.checkPermissionFast, {
+      userId: USERS.eve,
+      permission: "documents:write",
+      objectType: TYPES.project,
+      objectId: PROJECTS.alpha,
+    });
+    expect(canWrite).toBe(false);
+  });
+});
+
+// ============================================================================
+// Scenario 5: Complex Multi-Role Users
+// ============================================================================
+
+describe("Scenario: Users with Multiple Roles", () => {
+  it("user with different roles in different scopes", async () => {
+    const t = convexTest(schema, modules);
+
+    // Alice is:
+    // - Global viewer
+    // - Admin of Team Engineering
+    // - Member of Team Sales
+
+    await t.mutation(api.mutations.assignRole, {
+      userId: USERS.alice,
+      role: "viewer",
+    });
+
+    await t.mutation(api.mutations.assignRole, {
+      userId: USERS.alice,
+      role: "admin",
+      scope: { type: TYPES.team, id: TEAMS.acmeEng },
+    });
+
+    await t.mutation(api.mutations.assignRole, {
+      userId: USERS.alice,
+      role: "member",
+      scope: { type: TYPES.team, id: TEAMS.acmeSales },
+    });
+
+    // Get all Alice's roles
+    const roles = await t.query(api.queries.getUserRoles, {
+      userId: USERS.alice,
+    });
+
+    expect(roles).toHaveLength(3);
+
+    // Filter roles by scope
+    const globalRoles = roles.filter((r: any) => !r.scope);
+    const teamEngRoles = roles.filter(
+      (r: any) => r.scope?.type === TYPES.team && r.scope?.id === TEAMS.acmeEng
+    );
+    const teamSalesRoles = roles.filter(
+      (r: any) => r.scope?.type === TYPES.team && r.scope?.id === TEAMS.acmeSales
+    );
+
+    expect(globalRoles).toHaveLength(1);
+    expect(globalRoles[0].role).toBe("viewer");
+
+    expect(teamEngRoles).toHaveLength(1);
+    expect(teamEngRoles[0].role).toBe("admin");
+
+    expect(teamSalesRoles).toHaveLength(1);
+    expect(teamSalesRoles[0].role).toBe("member");
+  });
+
+  it("permission union from multiple roles", async () => {
+    const t = convexTest(schema, modules);
+
+    // Alice has viewer role (read only)
+    await t.mutation(api.indexed.assignRoleWithCompute, {
+      userId: USERS.alice,
+      role: "viewer",
+      rolePermissions: ["documents:read"],
+    });
+
+    // Alice also has editor role (read + write)
+    await t.mutation(api.indexed.assignRoleWithCompute, {
+      userId: USERS.alice,
+      role: "editor",
+      rolePermissions: ["documents:read", "documents:write"],
+    });
+
+    // Alice should have union of all permissions
+    const permissions = await t.query(api.indexed.getUserPermissionsFast, {
+      userId: USERS.alice,
+    });
+
+    const permNames = permissions.map((p: any) => p.permission);
+    expect(permNames).toContain("documents:read");
+    expect(permNames).toContain("documents:write");
+
+    // Both roles should be sources for documents:read
+    const readPerm = permissions.find((p: any) => p.permission === "documents:read");
+    expect(readPerm.sources).toContain("viewer");
+    expect(readPerm.sources).toContain("editor");
+  });
+});
+
+// ============================================================================
+// Scenario 6: Security Boundaries
+// ============================================================================
+
+describe("Scenario: Security Boundaries", () => {
+  it("user with no roles has no permissions", async () => {
+    const t = convexTest(schema, modules);
+
+    // Frank has no roles, no relationships, no grants
+    const canRead = await t.query(api.queries.checkPermission, {
+      userId: USERS.frank,
+      permission: "documents:read",
+      rolePermissions: {
+        admin: ["documents:read", "documents:write", "documents:delete"],
+        editor: ["documents:read", "documents:write"],
+        viewer: ["documents:read"],
+      },
+    });
+
+    expect(canRead.allowed).toBe(false);
+  });
+
+  it("revoking role removes all associated permissions", async () => {
+    const t = convexTest(schema, modules);
+
+    // Alice is admin
+    await t.mutation(api.indexed.assignRoleWithCompute, {
+      userId: USERS.alice,
+      role: "admin",
+      rolePermissions: ["documents:read", "documents:write", "documents:delete"],
+    });
+
+    // Verify Alice has permissions
+    let canDelete = await t.query(api.indexed.checkPermissionFast, {
+      userId: USERS.alice,
+      permission: "documents:delete",
+    });
+    expect(canDelete).toBe(true);
+
+    // Revoke admin role
+    await t.mutation(api.indexed.revokeRoleWithCompute, {
+      userId: USERS.alice,
+      role: "admin",
+      rolePermissions: ["documents:read", "documents:write", "documents:delete"],
+    });
+
+    // Alice should no longer have permissions
+    canDelete = await t.query(api.indexed.checkPermissionFast, {
+      userId: USERS.alice,
+      permission: "documents:delete",
+    });
+    expect(canDelete).toBe(false);
+
+    // Verify all permissions are gone
+    const permissions = await t.query(api.indexed.getUserPermissionsFast, {
+      userId: USERS.alice,
+    });
+    expect(permissions).toHaveLength(0);
+  });
+
+  it("removing relationship breaks access chain", async () => {
+    const t = convexTest(schema, modules);
+
+    // Setup: alice -> member -> acme-eng -> owner -> alpha
+    await t.mutation(api.rebac.addRelation, {
+      subjectType: TYPES.user,
+      subjectId: USERS.alice,
+      relation: "member",
+      objectType: TYPES.team,
+      objectId: TEAMS.acmeEng,
+    });
+
+    await t.mutation(api.rebac.addRelation, {
+      subjectType: TYPES.team,
+      subjectId: TEAMS.acmeEng,
+      relation: "owner",
+      objectType: TYPES.project,
+      objectId: PROJECTS.alpha,
+    });
+
+    // Verify access
+    let result = await t.query(api.rebac.checkRelationWithTraversal, {
+      subjectType: TYPES.user,
+      subjectId: USERS.alice,
+      relation: "viewer",
+      objectType: TYPES.project,
+      objectId: PROJECTS.alpha,
+      traversalRules: {
+        "project:viewer": [
+          { through: TYPES.team, via: "owner", inherit: "member" },
+        ],
+      },
+    });
+    expect(result.allowed).toBe(true);
+
+    // Remove alice from team
+    await t.mutation(api.rebac.removeRelation, {
+      subjectType: TYPES.user,
+      subjectId: USERS.alice,
+      relation: "member",
+      objectType: TYPES.team,
+      objectId: TEAMS.acmeEng,
+    });
+
+    // Access should be broken
+    result = await t.query(api.rebac.checkRelationWithTraversal, {
+      subjectType: TYPES.user,
+      subjectId: USERS.alice,
+      relation: "viewer",
+      objectType: TYPES.project,
+      objectId: PROJECTS.alpha,
+      traversalRules: {
+        "project:viewer": [
+          { through: TYPES.team, via: "owner", inherit: "member" },
+        ],
+      },
+    });
+    expect(result.allowed).toBe(false);
+  });
+});
+
+// ============================================================================
+// Scenario 7: Wildcard Permissions
+// ============================================================================
+
+describe("Scenario: Wildcard & Super Admin", () => {
+  it("super admin with *:* has all permissions", async () => {
+    const t = convexTest(schema, modules);
+
+    await t.mutation(api.mutations.assignRole, {
+      userId: USERS.alice,
+      role: "superadmin",
+    });
+
+    const result = await t.query(api.queries.checkPermission, {
+      userId: USERS.alice,
+      permission: "anything:action",
+      rolePermissions: {
+        superadmin: ["*:*"],
+      },
+    });
+
+    expect(result.allowed).toBe(true);
+  });
+
+  it("resource-level wildcard grants all actions on resource", async () => {
+    const t = convexTest(schema, modules);
+
+    await t.mutation(api.mutations.assignRole, {
+      userId: USERS.alice,
+      role: "doc_admin",
+    });
+
+    const rolePerms = {
+      doc_admin: ["documents:*"], // All document actions
+    };
+
+    const canRead = await t.query(api.queries.checkPermission, {
+      userId: USERS.alice,
+      permission: "documents:read",
+      rolePermissions: rolePerms,
+    });
+    expect(canRead.allowed).toBe(true);
+
+    const canDelete = await t.query(api.queries.checkPermission, {
+      userId: USERS.alice,
+      permission: "documents:delete",
+      rolePermissions: rolePerms,
+    });
+    expect(canDelete.allowed).toBe(true);
+
+    // But not other resources
+    const canReadProjects = await t.query(api.queries.checkPermission, {
+      userId: USERS.alice,
+      permission: "projects:read",
+      rolePermissions: rolePerms,
+    });
+    expect(canReadProjects.allowed).toBe(false);
+  });
+});
+
+// ============================================================================
+// Scenario 8: Audit Trail
+// ============================================================================
+
+describe("Scenario: Audit Trail", () => {
+  it("all permission changes are logged", async () => {
+    const t = convexTest(schema, modules);
+
+    // Assign role
+    await t.mutation(api.mutations.assignRole, {
+      userId: USERS.alice,
+      role: "admin",
+      assignedBy: "system",
+      enableAudit: true,
+    });
+
+    // Revoke role
+    await t.mutation(api.mutations.revokeRole, {
+      userId: USERS.alice,
+      role: "admin",
+      revokedBy: "system",
+      enableAudit: true,
+    });
+
+    // Grant permission
+    await t.mutation(api.mutations.grantPermission, {
+      userId: USERS.alice,
+      permission: "special:access",
+      createdBy: "system",
+      enableAudit: true,
+    });
+
+    // Get audit log
+    const logs = await t.query(api.queries.getAuditLog, {
+      userId: USERS.alice,
+    });
+
+    expect(logs.length).toBeGreaterThanOrEqual(3);
+
+    const actions = logs.map((l: any) => l.action);
+    expect(actions).toContain("role_assigned");
+    expect(actions).toContain("role_revoked");
+    expect(actions).toContain("permission_granted");
+  });
+});
