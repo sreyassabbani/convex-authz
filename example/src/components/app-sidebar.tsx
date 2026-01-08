@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { useState, useEffect } from "react";
+import { useState } from "react";
 
 interface NavItem {
   title: string;
@@ -27,13 +27,13 @@ interface AppSidebarProps {
   onPageChange: (page: string) => void;
 }
 
-export function AppSidebar({ currentPage, onPageChange }: AppSidebarProps) {
-  const [isDark, setIsDark] = useState(false);
+// Initialize from DOM synchronously to avoid flash
+const getInitialTheme = () =>
+  typeof document !== "undefined" &&
+  document.documentElement.classList.contains("dark");
 
-  useEffect(() => {
-    const isDarkMode = document.documentElement.classList.contains("dark");
-    setIsDark(isDarkMode);
-  }, []);
+export function AppSidebar({ currentPage, onPageChange }: AppSidebarProps) {
+  const [isDark, setIsDark] = useState(getInitialTheme);
 
   const toggleTheme = () => {
     const newValue = !isDark;

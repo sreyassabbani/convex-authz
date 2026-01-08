@@ -13,7 +13,7 @@ import { components } from "./_generated/api.js";
 import { Authz, definePermissions, defineRoles } from "@djpanda/convex-authz";
 import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel.js";
-import { DEMO_USERS, DEMO_ORGS, DEMO_DOCUMENTS, DEMO_ROLES } from "./constants.js";
+import { DEMO_USERS, DEMO_ORGS, DEMO_DOCUMENTS } from "./constants.js";
 
 // Define permissions and roles (same as example.ts)
 const permissions = definePermissions({

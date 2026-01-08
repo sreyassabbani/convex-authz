@@ -237,11 +237,6 @@ export const checkRelationWithTraversal = query({
   handler: async (ctx, args) => {
     const maxDepth = args.maxDepth ?? 5;
     const visited = new Set<string>();
-    const path: string[] = [];
-
-    // Helper to create a unique key for visited tracking
-    const key = (st: string, si: string, r: string, ot: string, oi: string) =>
-      `${st}:${si}|${r}|${ot}:${oi}`;
 
     // Check direct relation first
     const direct = await ctx.db
@@ -282,9 +277,6 @@ export const checkRelationWithTraversal = query({
         inherit: string; // relation to inherit from intermediate
       }>
     >;
-
-    const ruleKey = `${args.objectType}:${args.relation}`;
-    const applicableRules = rules[ruleKey] || [];
 
     // BFS traversal to find path
     interface QueueItem {

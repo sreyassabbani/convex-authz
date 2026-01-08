@@ -1,4 +1,4 @@
-import type { GenericQueryCtx, GenericDataModel } from "convex/server";
+// Helper types and utilities for authorization checks
 
 /**
  * Role hierarchy levels for comparison
@@ -104,15 +104,6 @@ export function matchesScope(
   if (!targetScope) return false;
   // Both have scope, must match exactly
   return scope.type === targetScope.type && scope.id === targetScope.id;
-}
-
-/**
- * Role assignment type for helper functions
- */
-interface RoleAssignment {
-  role: string;
-  scope?: { type: string; id: string };
-  expiresAt?: number;
 }
 
 /**

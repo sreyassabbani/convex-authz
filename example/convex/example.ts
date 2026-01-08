@@ -77,7 +77,11 @@ export const canEdit = query({
   returns: v.boolean(),
   handler: async (ctx, args) => {
     const userId = await getAuthUserId(ctx);
-    return await authz.can(ctx, userId, "documents:update");
+    // Check if user can update this specific document (scoped permission)
+    return await authz.can(ctx, userId, "documents:update", {
+      type: "document",
+      id: args.docId,
+    });
   },
 });
 
