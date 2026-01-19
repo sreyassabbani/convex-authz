@@ -6,7 +6,14 @@
  *
  * @example
  * ```typescript
- * import { Authz, definePermissions, defineRoles } from "@djpanda/convex-authz";
+ * import {
+ *   Authz,
+ *   definePermissions,
+ *   defineRoles,
+ *   AnyRole,
+ *   GlobalRole,
+ *   AnyPermission,
+ * } from "@djpanda/convex-authz";
  * import { components } from "./_generated/api";
  *
  * const permissions = definePermissions({
@@ -35,30 +42,76 @@ import type { ComponentApi } from "../component/_generated/component.js";
 // ============================================================================
 
 /**
- * Permission definition structure
- * Maps resource names to action names
+ * Permission configuration structure
  */
-export type PermissionDefinition = Record<string, Record<string, boolean>>;
+export type PermissionConfig = Record<string, Record<string, boolean>>;
+
+export type RoleConfig<P extends PermissionConfig> = Record<
+  string,
+  { [K in keyof P & string]?: Array<keyof P[K] & string> }
+>;
 
 /**
- * Role definition structure
- * Maps role names to their granted permissions
+ * Scope configuration for the authz system
  */
-export type RoleDefinition<P extends PermissionDefinition> = Record<
-  string,
-  { [K in keyof P]?: Array<keyof P[K]> }
->;
+export interface AuthzConfig<P extends PermissionConfig> {
+  permissions: P;
+  roles: {
+    [scope: string]: RoleConfig<P>;
+  };
+}
+
+/**
+ * Helper to extract the scope from a role string (e.g., "org:admin" -> "org")
+ */
+export type ScopeOf<R extends string> = R extends `${infer S}:${string}`
+  ? S
+  : "global";
+
+/**
+ * Helper to get all valid global role names
+ */
+export type GlobalRole<C extends AuthzConfig<PermissionConfig>> =
+  keyof C["roles"]["global"] & string;
+
+/**
+ * Helper to get all valid role strings (e.g., "global:admin", "org:member")
+ */
+export type AnyRole<C extends AuthzConfig<PermissionConfig>> = {
+  [S in keyof C["roles"] & string]: S extends "global"
+  ? keyof C["roles"][S] & string
+  : `${S}:${keyof C["roles"][S] & string}`;
+}[keyof C["roles"] & string];
+
+/**
+ * Helper to get all valid permission strings (e.g., "documents:read", "org:delete")
+ */
+export type AnyPermission<C extends AuthzConfig<PermissionConfig>> = {
+  [K in keyof C["permissions"] & string]: `${K}:${keyof C["permissions"][K] & string}`;
+}[keyof C["permissions"] & string];
+
+/**
+ * Helper to get the ID type for a given scope
+ */
+export type ScopeIdType<S extends string> = string; // In a real app, this could be Id<S> if S maps to a table
+
+/**
+ * Argument type for scope-dependent methods
+ */
+export type ScopeArgs<
+  C extends AuthzConfig<PermissionConfig>,
+  R extends string,
+> = ScopeOf<R> extends "global" ? [] : [scopeId: string];
 
 /**
  * Policy definition for ABAC
  */
-export type PolicyDefinition = Record<
-  string,
-  {
-    condition: (ctx: PolicyContext) => boolean;
-    message?: string;
-  }
->;
+export type PolicyConfig = {
+  condition: (ctx: PolicyContext) => boolean | Promise<boolean>;
+  message?: string;
+};
+
+export type PolicyDefinition = Record<string, PolicyConfig>;
 
 /**
  * Policy evaluation context
@@ -78,7 +131,7 @@ export interface PolicyContext {
 }
 
 /**
- * Scope for resource-level permissions
+ * Internal Scope representation
  */
 export interface Scope {
   type: string;
@@ -92,39 +145,46 @@ export interface Scope {
 /**
  * Define type-safe permissions
  */
-export function definePermissions<P extends PermissionDefinition>(
+export function definePermissions<P extends PermissionConfig>(
   permissions: P
 ): P {
   return permissions;
 }
 
 /**
- * Define type-safe roles based on permissions
+ * Define type-safe roles for a specific scope
  */
-export function defineRoles<
-  P extends PermissionDefinition,
-  R extends RoleDefinition<P>,
->(permissions: P, roles: R): R {
+export function defineRoles<P extends PermissionConfig>(
+  _permissions: P,
+  roles: RoleConfig<P>
+): RoleConfig<P> {
   return roles;
 }
 
 /**
- * Define ABAC policies
+ * Define the full authz configuration
  */
-export function definePolicies<Policy extends PolicyDefinition>(
-  policies: Policy
-): Policy {
+export function defineAuthzConfig<P extends PermissionConfig>(
+  config: AuthzConfig<P>
+): AuthzConfig<P> {
+  return config;
+}
+
+/**
+ * Define type-safe policies
+ */
+export function definePolicies<P extends PolicyDefinition>(policies: P): P {
   return policies;
 }
 
 /**
  * Flatten role permissions into an array of permission strings
  */
-export function flattenRolePermissions(
-  roles: Record<string, Record<string, string[]>>,
+export function flattenRolePermissions<P extends PermissionConfig>(
+  roleConfig: RoleConfig<P>,
   roleName: string
 ): string[] {
-  const rolePerms = roles[roleName];
+  const rolePerms = roleConfig[roleName];
   if (!rolePerms) return [];
 
   const permissions: string[] = [];
@@ -149,49 +209,51 @@ type ActionCtx = Pick<
   "runQuery" | "runMutation" | "runAction"
 >;
 
-// ============================================================================
-// Authz Client Class (Standard)
-// ============================================================================
-
 /**
  * Standard Authz client for RBAC/ABAC operations
- *
- * @example
- * ```typescript
- * const authz = new Authz(components.authz, { permissions, roles });
- *
- * // In a mutation or query
- * const canEdit = await authz.can(ctx, userId, "documents:update");
- * await authz.require(ctx, userId, "documents:update");
- * ```
  */
 export class Authz<
-  P extends PermissionDefinition,
-  R extends RoleDefinition<P>,
+  P extends PermissionConfig,
+  C extends AuthzConfig<P>,
   Policy extends PolicyDefinition = Record<string, never>,
 > {
   constructor(
     public component: ComponentApi,
     private options: {
-      permissions: P;
-      roles: R;
+      config: C;
       policies?: Policy;
       defaultActorId?: string;
     }
-  ) {}
+  ) { }
 
   /**
    * Build role permissions map for queries
    */
   private buildRolePermissionsMap(): Record<string, string[]> {
     const map: Record<string, string[]> = {};
-    const roles = this.options.roles as Record<string, Record<string, string[]>>;
 
-    for (const roleName of Object.keys(roles)) {
-      map[roleName] = flattenRolePermissions(roles, roleName);
+    for (const [scope, roles] of Object.entries(this.options.config.roles)) {
+      for (const roleName of Object.keys(roles)) {
+        const fullRoleName = scope === "global" ? roleName : `${scope}:${roleName}`;
+        map[fullRoleName] = flattenRolePermissions(roles, roleName);
+      }
     }
 
     return map;
+  }
+
+  /**
+   * Parse a role string into scope and role name
+   */
+  private parseRole(roleString: string, scopeId?: string): { role: string; scope?: Scope } {
+    if (roleString.includes(":")) {
+      const [scopeType, roleName] = roleString.split(":");
+      return {
+        role: roleName,
+        scope: scopeId ? { type: scopeType, id: scopeId } : undefined,
+      };
+    }
+    return { role: roleString };
   }
 
   /**
@@ -239,15 +301,16 @@ export class Authz<
   /**
    * Check if user has a role
    */
-  async hasRole(
+  async hasRole<R extends AnyRole<C>>(
     ctx: QueryCtx | ActionCtx,
     userId: string,
-    role: keyof R & string,
-    scope?: Scope
+    role: R,
+    ...args: ScopeArgs<C, R>
   ): Promise<boolean> {
+    const { role: roleName, scope } = this.parseRole(role, args[0]);
     return await ctx.runQuery(this.component.queries.hasRole, {
       userId,
-      role,
+      role: roleName,
       scope,
     });
   }
@@ -278,48 +341,76 @@ export class Authz<
   }
 
   /**
-   * Get all attributes for a user
-   */
-  async getUserAttributes(ctx: QueryCtx | ActionCtx, userId: string) {
-    return await ctx.runQuery(this.component.queries.getUserAttributes, {
-      userId,
-    });
-  }
-
-  /**
    * Assign a role to a user
    */
+  async assignRole<R extends GlobalRole<C>>(
+    ctx: MutationCtx | ActionCtx,
+    userId: string,
+    role: R,
+    expiresAt?: number,
+    actorId?: string
+  ): Promise<string>;
+  async assignRole<R extends AnyRole<C>>(
+    ctx: MutationCtx | ActionCtx,
+    userId: string,
+    role: R,
+    scopeId: string,
+    expiresAt?: number,
+    actorId?: string
+  ): Promise<string>;
   async assignRole(
     ctx: MutationCtx | ActionCtx,
     userId: string,
-    role: keyof R & string,
-    scope?: Scope,
-    expiresAt?: number,
-    actorId?: string
+    role: string,
+    ...args: [unknown?, unknown?, unknown?]
   ): Promise<string> {
+    const isGlobal = !role.includes(":");
+    const scopeId = (isGlobal ? undefined : args[0]) as string | undefined;
+    const expiresAt = (isGlobal ? args[0] : args[1]) as number | undefined;
+    const actorId = (isGlobal ? args[1] : args[2]) as string | undefined;
+
+    const { role: roleName, scope } = this.parseRole(role, scopeId);
+
     return await ctx.runMutation(this.component.mutations.assignRole, {
       userId,
-      role,
+      role: roleName,
       scope,
       expiresAt,
       assignedBy: actorId ?? this.options.defaultActorId,
       enableAudit: true,
     });
   }
-
   /**
    * Revoke a role from a user
    */
+  async revokeRole<R extends GlobalRole<C>>(
+    ctx: MutationCtx | ActionCtx,
+    userId: string,
+    role: R,
+    actorId?: string
+  ): Promise<boolean>;
+  async revokeRole<R extends AnyRole<C>>(
+    ctx: MutationCtx | ActionCtx,
+    userId: string,
+    role: R,
+    scopeId: string,
+    actorId?: string
+  ): Promise<boolean>;
   async revokeRole(
     ctx: MutationCtx | ActionCtx,
     userId: string,
-    role: keyof R & string,
-    scope?: Scope,
-    actorId?: string
+    role: string,
+    ...args: [unknown?, unknown?]
   ): Promise<boolean> {
+    const isGlobal = !role.includes(":");
+    const scopeId = (isGlobal ? undefined : args[0]) as string | undefined;
+    const actorId = (isGlobal ? args[0] : args[1]) as string | undefined;
+
+    const { role: roleName, scope } = this.parseRole(role, scopeId);
+
     return await ctx.runMutation(this.component.mutations.revokeRole, {
       userId,
-      role,
+      role: roleName,
       scope,
       revokedBy: actorId ?? this.options.defaultActorId,
       enableAudit: true,
@@ -368,7 +459,7 @@ export class Authz<
   async grantPermission(
     ctx: MutationCtx | ActionCtx,
     userId: string,
-    permission: string,
+    permission: AnyPermission<C>,
     scope?: Scope,
     reason?: string,
     expiresAt?: number,
@@ -391,7 +482,7 @@ export class Authz<
   async denyPermission(
     ctx: MutationCtx | ActionCtx,
     userId: string,
-    permission: string,
+    permission: AnyPermission<C>,
     scope?: Scope,
     reason?: string,
     expiresAt?: number,
@@ -405,6 +496,11 @@ export class Authz<
       expiresAt,
       createdBy: actorId ?? this.options.defaultActorId,
       enableAudit: true,
+    });
+  }
+  async getUserAttributes(ctx: QueryCtx | ActionCtx, userId: string) {
+    return await ctx.runQuery(this.component.queries.getUserAttributes, {
+      userId,
     });
   }
 
@@ -444,27 +540,48 @@ export class Authz<
  *
  * Use this for production workloads with many permission checks.
  * Writes are slower but reads are instant via indexed lookups.
- *
- * @example
- * ```typescript
- * const authz = new IndexedAuthz(components.authz, { permissions, roles });
- *
- * // O(1) permission check
- * const canEdit = await authz.can(ctx, userId, "documents:update");
- * ```
  */
 export class IndexedAuthz<
-  P extends PermissionDefinition,
-  R extends RoleDefinition<P>,
+  P extends PermissionConfig,
+  C extends AuthzConfig<P>,
 > {
   constructor(
     public component: ComponentApi,
     private options: {
-      permissions: P;
-      roles: R;
+      config: C;
       defaultActorId?: string;
     }
-  ) {}
+  ) { }
+
+  /**
+   * Build role permissions map for computed roles
+   */
+  private buildRolePermissionsMap(): Record<string, string[]> {
+    const map: Record<string, string[]> = {};
+
+    for (const [scope, roles] of Object.entries(this.options.config.roles)) {
+      for (const roleName of Object.keys(roles)) {
+        const fullRoleName = scope === "global" ? roleName : `${scope}:${roleName}`;
+        map[fullRoleName] = flattenRolePermissions(roles, roleName);
+      }
+    }
+
+    return map;
+  }
+
+  /**
+   * Parse a role string into scope and role name
+   */
+  private parseRole(roleString: string, scopeId?: string): { role: string; scope?: Scope } {
+    if (roleString.includes(":")) {
+      const [scopeType, roleName] = roleString.split(":");
+      return {
+        role: roleName,
+        scope: scopeId ? { type: scopeType, id: scopeId } : undefined,
+      };
+    }
+    return { role: roleString };
+  }
 
   /**
    * Check permission - O(1) indexed lookup
@@ -501,17 +618,18 @@ export class IndexedAuthz<
   }
 
   /**
-   * Check role - O(1) indexed lookup
+   * Check if user has a role
    */
-  async hasRole(
+  async hasRole<R extends AnyRole<C>>(
     ctx: QueryCtx | ActionCtx,
     userId: string,
-    role: keyof R & string,
-    scope?: Scope
+    role: R,
+    ...args: ScopeArgs<C, R>
   ): Promise<boolean> {
+    const { role: roleName, scope } = this.parseRole(role, args[0]);
     return await ctx.runQuery(this.component.indexed.hasRoleFast, {
       userId,
-      role,
+      role: roleName,
       objectType: scope?.type,
       objectId: scope?.id,
     });
@@ -566,18 +684,38 @@ export class IndexedAuthz<
   /**
    * Assign a role and pre-compute permissions
    */
+  async assignRole<R extends GlobalRole<C>>(
+    ctx: MutationCtx | ActionCtx,
+    userId: string,
+    role: R,
+    expiresAt?: number,
+    actorId?: string
+  ): Promise<string>;
+  async assignRole<R extends AnyRole<C>>(
+    ctx: MutationCtx | ActionCtx,
+    userId: string,
+    role: R,
+    scopeId: string,
+    expiresAt?: number,
+    actorId?: string
+  ): Promise<string>;
   async assignRole(
     ctx: MutationCtx | ActionCtx,
     userId: string,
-    roleName: keyof R & string,
-    scope?: Scope,
-    expiresAt?: number,
-    assignedBy?: string
+    role: string,
+    ...args: [unknown?, unknown?, unknown?]
   ): Promise<string> {
-    const rolePermissions = flattenRolePermissions(
-      this.options.roles as unknown as Record<string, Record<string, string[]>>,
-      roleName
-    );
+    const isGlobal = !role.includes(":");
+    const scopeId = (isGlobal ? undefined : args[0]) as string | undefined;
+    const expiresAt = (isGlobal ? args[0] : args[1]) as number | undefined;
+    const actorId = (isGlobal ? args[1] : args[2]) as string | undefined;
+
+    const { role: roleName, scope } = this.parseRole(role, scopeId);
+
+    // Get scoped role config
+    const scopeName = (role.includes(':') ? role.split(':')[0] : 'global') as keyof C["roles"] & string;
+    const scopeRoles = this.options.config.roles[scopeName];
+    const rolePermissions = flattenRolePermissions(scopeRoles, roleName);
 
     return await ctx.runMutation(this.component.indexed.assignRoleWithCompute, {
       userId,
@@ -585,23 +723,40 @@ export class IndexedAuthz<
       rolePermissions,
       scope,
       expiresAt,
-      assignedBy: assignedBy ?? this.options.defaultActorId,
+      assignedBy: actorId ?? this.options.defaultActorId,
     });
   }
 
   /**
    * Revoke a role and recompute permissions
    */
+  async revokeRole<R extends GlobalRole<C>>(
+    ctx: MutationCtx | ActionCtx,
+    userId: string,
+    role: R,
+    actorId?: string
+  ): Promise<boolean>;
+  async revokeRole<R extends AnyRole<C>>(
+    ctx: MutationCtx | ActionCtx,
+    userId: string,
+    role: R,
+    scopeId: string,
+    actorId?: string
+  ): Promise<boolean>;
   async revokeRole(
     ctx: MutationCtx | ActionCtx,
     userId: string,
-    roleName: keyof R & string,
-    scope?: Scope
+    role: string,
+    ...args: [unknown?, unknown?]
   ): Promise<boolean> {
-    const rolePermissions = flattenRolePermissions(
-      this.options.roles as unknown as Record<string, Record<string, string[]>>,
-      roleName
-    );
+    const isGlobal = !role.includes(":");
+    const scopeId = (isGlobal ? undefined : args[0]) as string | undefined;
+    const { role: roleName, scope } = this.parseRole(role, scopeId);
+
+    // Get scoped role config
+    const scopeName = (role.includes(':') ? role.split(':')[0] : 'global') as keyof C["roles"] & string;
+    const scopeRoles = this.options.config.roles[scopeName];
+    const rolePermissions = flattenRolePermissions(scopeRoles, roleName);
 
     return await ctx.runMutation(this.component.indexed.revokeRoleWithCompute, {
       userId,

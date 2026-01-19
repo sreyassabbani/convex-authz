@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@convex/_generated/api";
+import type { FunctionArgs } from "convex/server";
 import {
   Card,
   CardContent,
@@ -18,7 +19,7 @@ export function UsersPage() {
     null
   );
   const [selectedOrgId, setSelectedOrgId] = useState<Id<"orgs"> | null>(null);
-  const [selectedRole, setSelectedRole] = useState<string | null>(null);
+  const [selectedRole, setSelectedRole] = useState<FunctionArgs<typeof api.app.assignRole>["role"] | null>(null);
 
   const users = useQuery(api.app.listUsers) ?? [];
   const orgs = useQuery(api.app.listOrgs) ?? [];
@@ -42,7 +43,10 @@ export function UsersPage() {
     setSelectedRole(null);
   };
 
-  const handleRevokeRole = async (role: string, orgId?: string) => {
+  const handleRevokeRole = async (
+    role: FunctionArgs<typeof api.app.revokeRole>["role"],
+    orgId?: string
+  ) => {
     if (!selectedUserId) return;
     await revokeRole({
       userId: selectedUserId,
@@ -143,9 +147,14 @@ export function UsersPage() {
                             variant="ghost"
                             size="icon"
                             className="size-6"
-                            onClick={() =>
-                              handleRevokeRole(role.role, role.scope?.id)
-                            }
+                            onClick={() => {
+                              const fullRoleName = (role.scope
+                                ? `${role.scope.type}:${role.role}`
+                                : role.role) as typeof selectedRole;
+                              if (fullRoleName) {
+                                handleRevokeRole(fullRoleName, role.scope?.id);
+                              }
+                            }}
                           >
                             <Trash2 className="size-3" />
                           </Button>

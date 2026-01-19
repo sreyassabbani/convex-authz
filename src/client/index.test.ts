@@ -4,6 +4,7 @@ import {
   defineRoles,
   definePolicies,
   flattenRolePermissions,
+  type PolicyContext,
 } from "./index.js";
 
 describe("client helpers", () => {
@@ -50,7 +51,7 @@ describe("client helpers", () => {
     it("should return policies as-is", () => {
       const policies = definePolicies({
         isAdmin: {
-          condition: (ctx) => ctx.subject.roles.includes("admin"),
+          condition: (ctx: PolicyContext) => ctx.subject.roles.includes("admin"),
           message: "Must be admin",
         },
       });

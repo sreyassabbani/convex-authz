@@ -4,13 +4,23 @@
  * These functions provide data for the frontend dashboard.
  */
 
-import { mutation, query } from "./_generated/server.js";
+import { mutation, query, type QueryCtx, type MutationCtx } from "./_generated/server.js";
 import { components } from "./_generated/api.js";
-import { Authz, definePermissions, defineRoles } from "@djpanda/convex-authz";
-import { v } from "convex/values";
-import { DEMO_ROLES } from "./constants.js";
+import {
+  Authz,
+  definePermissions,
+  defineRoles,
+  defineAuthzConfig,
+  AnyRole,
+  GlobalRole,
+  AnyPermission,
+} from "@djpanda/convex-authz";
+import { v, type Validator } from "convex/values";
+import { Auth } from "convex/server";
 
-// Define permissions and roles
+// ============================================================================
+// Step 1: Define your permissions
+// ============================================================================
 const permissions = definePermissions({
   documents: { create: true, read: true, update: true, delete: true },
   settings: { view: true, manage: true },
@@ -18,28 +28,42 @@ const permissions = definePermissions({
   billing: { view: true, manage: true },
 });
 
-const roles = defineRoles(permissions, {
+// ============================================================================
+// Step 2: Define roles for each scope
+// ============================================================================
+const globalRoles = defineRoles(permissions, {
   admin: {
     documents: ["create", "read", "update", "delete"],
     settings: ["view", "manage"],
     users: ["invite", "remove", "manage"],
     billing: ["view", "manage"],
   },
-  editor: {
-    documents: ["create", "read", "update"],
+});
+
+const orgRoles = defineRoles(permissions, {
+  admin: {
+    documents: ["create", "read", "update", "delete"],
     settings: ["view"],
+    users: ["invite", "remove"],
   },
-  viewer: {
-    documents: ["read"],
-    settings: ["view"],
-  },
-  billing_admin: {
-    billing: ["view", "manage"],
+  member: {
+    documents: ["read", "create"],
     settings: ["view"],
   },
 });
 
-const authz = new Authz(components.authz, { permissions, roles });
+// ============================================================================
+// Step 3: Combine into a full Authz config
+// ============================================================================
+const authzConfig = defineAuthzConfig({
+  permissions,
+  roles: {
+    global: globalRoles,
+    org: orgRoles,
+  },
+});
+
+const authz = new Authz(components.authz, { config: authzConfig });
 
 // ============================================================================
 // Queries
@@ -124,7 +148,7 @@ export const getUserWithRoles = query({
     }),
     v.null()
   ),
-  handler: async (ctx, args) => {
+  handler: async (ctx: QueryCtx, args) => {
     const user = await ctx.db.get(args.userId);
     if (!user) return null;
 
@@ -157,19 +181,33 @@ export const getRoleDefinitions = query({
   args: {},
   returns: v.array(
     v.object({
-      name: v.string(),
+      name: v.string() as Validator<AnyRole<typeof authzConfig>>,
       label: v.string(),
       description: v.string(),
       permissions: v.array(v.string()),
     })
   ),
   handler: async () => {
-    return Object.entries(DEMO_ROLES).map(([name, role]) => ({
-      name,
-      label: role.label,
-      description: role.description,
-      permissions: [...role.permissions],
-    }));
+    return [
+      {
+        name: "global:admin" as AnyRole<typeof authzConfig>,
+        label: "Global Admin",
+        description: "Full access to all resources across all orgs",
+        permissions: ["*"],
+      },
+      {
+        name: "org:admin" as AnyRole<typeof authzConfig>,
+        label: "Org Admin",
+        description: "Full administrative access within an organization",
+        permissions: ["documents:*", "settings:*", "users:*"],
+      },
+      {
+        name: "org:member" as AnyRole<typeof authzConfig>,
+        label: "Org Member",
+        description: "Read/Write access to documents within an organization",
+        permissions: ["documents:read", "documents:create", "settings:view"],
+      },
+    ];
   },
 });
 
@@ -209,7 +247,7 @@ export const getStats = query({
 export const checkPermission = query({
   args: {
     userId: v.id("users"),
-    permission: v.string(),
+    permission: v.string() as Validator<AnyPermission<typeof authzConfig>>,
     orgId: v.optional(v.id("orgs")),
   },
   returns: v.boolean(),
@@ -262,81 +300,64 @@ export const checkAllPermissions = query({
 export const assignRole = mutation({
   args: {
     userId: v.id("users"),
-    role: v.string(),
+    role: v.string() as Validator<AnyRole<typeof authzConfig>>, // Strictly typed
     orgId: v.optional(v.id("orgs")),
   },
   returns: v.string(),
-  handler: async (ctx, args) => {
-    const scope = args.orgId
-      ? { type: "org", id: String(args.orgId) }
-      : undefined;
-    // Cast to any to allow dynamic role names from UI
-    return await authz.assignRole(
-      ctx,
-      String(args.userId),
-      args.role as keyof typeof roles,
-      scope
-    );
+  handler: async (ctx: MutationCtx, args) => {
+    const role = args.role;
+    if (role.includes(":")) {
+      const orgId = args.orgId ? String(args.orgId) : "";
+      return await authz.assignRole(
+        ctx,
+        String(args.userId),
+        role,
+        orgId
+      );
+    } else {
+      return await authz.assignRole(
+        ctx,
+        String(args.userId),
+        role as GlobalRole<typeof authzConfig>
+      );
+    }
   },
 });
 
 export const revokeRole = mutation({
   args: {
     userId: v.id("users"),
-    role: v.string(),
+    role: v.string() as Validator<AnyRole<typeof authzConfig>>,
     orgId: v.optional(v.id("orgs")),
   },
   returns: v.boolean(),
-  handler: async (ctx, args) => {
-    const scope = args.orgId
-      ? { type: "org", id: String(args.orgId) }
-      : undefined;
-    // Cast to any to allow dynamic role names from UI
-    return await authz.revokeRole(
-      ctx,
-      String(args.userId),
-      args.role as keyof typeof roles,
-      scope
-    );
+  handler: async (ctx: MutationCtx, args) => {
+    const role = args.role;
+    if (role.includes(":")) {
+      const orgId = args.orgId ? String(args.orgId) : "";
+      return await authz.revokeRole(
+        ctx,
+        String(args.userId),
+        role,
+        orgId
+      );
+    } else {
+      return await authz.revokeRole(
+        ctx,
+        String(args.userId),
+        role as GlobalRole<typeof authzConfig>
+      );
+    }
   },
 });
 
-export const grantPermission = mutation({
-  args: {
-    userId: v.id("users"),
-    permission: v.string(),
-    orgId: v.optional(v.id("orgs")),
-  },
-  returns: v.string(),
-  handler: async (ctx, args) => {
-    const scope = args.orgId
-      ? { type: "org", id: String(args.orgId) }
-      : undefined;
-    return await authz.grantPermission(
-      ctx,
-      String(args.userId),
-      args.permission,
-      scope
-    );
-  },
-});
-
-export const denyPermission = mutation({
-  args: {
-    userId: v.id("users"),
-    permission: v.string(),
-    orgId: v.optional(v.id("orgs")),
-  },
-  returns: v.string(),
-  handler: async (ctx, args) => {
-    const scope = args.orgId
-      ? { type: "org", id: String(args.orgId) }
-      : undefined;
-    return await authz.denyPermission(
-      ctx,
-      String(args.userId),
-      args.permission,
-      scope
-    );
-  },
-});
+// ============================================================================
+// Helper function to get authenticated user ID
+// ============================================================================
+async function getAuthUserId(ctx: { auth: Auth }): Promise<string> {
+  const identity = await ctx.auth.getUserIdentity();
+  if (!identity) {
+    throw new Error("Unauthorized: User must be authenticated");
+  }
+  return identity.subject;
+}

@@ -10,12 +10,21 @@
 
 import { mutation } from "./_generated/server.js";
 import { components } from "./_generated/api.js";
-import { Authz, definePermissions, defineRoles } from "@djpanda/convex-authz";
+import {
+  Authz,
+  definePermissions,
+  defineRoles,
+  defineAuthzConfig,
+  AnyRole,
+  GlobalRole,
+} from "@djpanda/convex-authz";
 import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel.js";
 import { DEMO_USERS, DEMO_ORGS, DEMO_DOCUMENTS } from "./constants.js";
 
-// Define permissions and roles (same as example.ts)
+// ============================================================================
+// Step 1: Define permissions
+// ============================================================================
 const permissions = definePermissions({
   documents: { create: true, read: true, update: true, delete: true },
   settings: { view: true, manage: true },
@@ -23,28 +32,42 @@ const permissions = definePermissions({
   billing: { view: true, manage: true },
 });
 
-const roles = defineRoles(permissions, {
+// ============================================================================
+// Step 2: Define roles for each scope
+// ============================================================================
+const globalRoles = defineRoles(permissions, {
   admin: {
     documents: ["create", "read", "update", "delete"],
     settings: ["view", "manage"],
     users: ["invite", "remove", "manage"],
     billing: ["view", "manage"],
   },
-  editor: {
-    documents: ["create", "read", "update"],
+});
+
+const orgRoles = defineRoles(permissions, {
+  admin: {
+    documents: ["create", "read", "update", "delete"],
     settings: ["view"],
+    users: ["invite", "remove"],
   },
-  viewer: {
-    documents: ["read"],
-    settings: ["view"],
-  },
-  billing_admin: {
-    billing: ["view", "manage"],
+  member: {
+    documents: ["read", "create"],
     settings: ["view"],
   },
 });
 
-const authz = new Authz(components.authz, { permissions, roles });
+// ============================================================================
+// Step 3: Combine into a full Authz config
+// ============================================================================
+const authzConfig = defineAuthzConfig({
+  permissions,
+  roles: {
+    global: globalRoles,
+    org: orgRoles,
+  },
+});
+
+const authz = new Authz(components.authz, { config: authzConfig });
 
 /**
  * Seed all demo data
@@ -124,23 +147,20 @@ export const seedAll = mutation({
       // Assign role if specified
       if (user.role && user.org) {
         try {
+          // In the demo, we assume these are org-level roles
+          const roleName = `org:${user.role}` as AnyRole<typeof authzConfig>;
           await authz.assignRole(
             ctx,
             String(userId),
-            user.role as keyof typeof roles,
-            {
-              type: "org",
-              id: String(orgMap[user.org]),
-            }
+            roleName,
+            String(orgMap[user.org])
           );
           roleAssignments++;
-          console.log(
-            `   ✓ ${user.name} → ${user.role} @ ${user.org}`
-          );
-        } catch {
+        } catch (e: unknown) {
           // Role may already be assigned
+          const message = e instanceof Error ? e.message : String(e);
           console.log(
-            `   ⚠ ${user.name} → ${user.role} @ ${user.org} (already assigned)`
+            `   ⚠ ${user.name} → ${user.role} @ ${user.org} (failed: ${message})`
           );
         }
       } else if (!user.role) {
@@ -242,12 +262,25 @@ export const clearAll = mutation({
       const userRoles = await authz.getUserRoles(ctx, String(user._id));
       for (const role of userRoles) {
         try {
-          await authz.revokeRole(
-            ctx,
-            String(user._id),
-            role.role as keyof typeof roles,
-            role.scope
-          );
+          // Parse the role back for revocation
+          const fullRoleName = (role.scope
+            ? `${role.scope.type}:${role.role}`
+            : role.role) as AnyRole<typeof authzConfig>;
+
+          if (fullRoleName.includes(":")) {
+            await authz.revokeRole(
+              ctx,
+              String(user._id),
+              fullRoleName,
+              role.scope?.id as string
+            );
+          } else {
+            await authz.revokeRole(
+              ctx,
+              String(user._id),
+              fullRoleName as GlobalRole<typeof authzConfig>
+            );
+          }
         } catch {
           // Ignore errors
         }
