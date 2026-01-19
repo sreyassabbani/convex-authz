@@ -314,6 +314,61 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         string,
         Name
       >;
+      createRoleDefinition: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          name: string;
+          scope?: { id: string; type: string };
+          permissions: Array<string>;
+          parentRole?: string;
+          isSystem: boolean;
+          label?: string;
+          description?: string;
+          createdBy?: string;
+        },
+        string,
+        Name
+      >;
+      updateRoleDefinition: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          roleId: any;
+          permissions?: Array<string>;
+          parentRole?: string | null;
+          label?: string;
+          description?: string;
+          updatedBy?: string;
+        },
+        boolean,
+        Name
+      >;
+      deleteRoleDefinition: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          roleId: any;
+          deletedBy?: string;
+        },
+        boolean,
+        Name
+      >;
+      syncSystemRoles: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          roles: Array<{
+            name: string;
+            permissions: Array<string>;
+            parentRole?: string;
+            label?: string;
+            description?: string;
+          }>;
+        },
+        { created: number; updated: number },
+        Name
+      >;
     };
     queries: {
       checkPermission: FunctionReference<
@@ -338,13 +393,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         {
           action?:
-            | "permission_check"
-            | "role_assigned"
-            | "role_revoked"
-            | "permission_granted"
-            | "permission_denied"
-            | "attribute_set"
-            | "attribute_removed";
+          | "permission_check"
+          | "role_assigned"
+          | "role_revoked"
+          | "permission_granted"
+          | "permission_denied"
+          | "attribute_set"
+          | "attribute_removed";
           limit?: number;
           userId?: string;
         },
@@ -426,6 +481,29 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         { role: string; scope?: { id: string; type: string }; userId: string },
         boolean,
+        Name
+      >;
+      getRoleDefinitions: FunctionReference<
+        "query",
+        "internal",
+        { scope?: { id: string; type: string } },
+        Array<{
+          _id: string;
+          name: string;
+          scope?: { id: string; type: string };
+          permissions: Array<string>;
+          parentRole?: string;
+          isSystem: boolean;
+          label?: string;
+          description?: string;
+        }>,
+        Name
+      >;
+      resolveRolePermissions: FunctionReference<
+        "query",
+        "internal",
+        { roleName: string; scope?: { id: string; type: string } },
+        { permissions: Array<string>; inheritedFrom: Array<string> },
         Name
       >;
     };

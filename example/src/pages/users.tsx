@@ -134,7 +134,7 @@ export function UsersPage() {
                     <div className="flex flex-wrap gap-2">
                       {userWithRoles.roles.map((role) => (
                         <div
-                          key={role._id}
+                          key={`${role.role}:${role.scope?.id || "global"}`}
                           className="flex items-center gap-2 bg-secondary rounded-lg px-3 py-1.5"
                         >
                           <Badge variant="outline">{role.role}</Badge>

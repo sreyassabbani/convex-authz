@@ -652,3 +652,250 @@ export const cleanupExpired = mutation({
     return { expiredRoles, expiredOverrides };
   },
 });
+
+// ============================================================================
+// Dynamic Role Definition Mutations
+// ============================================================================
+
+/**
+ * Create a new role definition (system or custom)
+ */
+export const createRoleDefinition = mutation({
+  args: {
+    name: v.string(),
+    scope: v.optional(
+      v.object({
+        type: v.string(),
+        id: v.string(),
+      })
+    ),
+    permissions: v.array(v.string()),
+    parentRole: v.optional(v.string()),
+    isSystem: v.boolean(),
+    label: v.optional(v.string()),
+    description: v.optional(v.string()),
+    createdBy: v.optional(v.string()),
+  },
+  returns: v.string(),
+  handler: async (ctx, args) => {
+    const now = Date.now();
+
+    // Check for existing role with same name and scope
+    const existing = await ctx.db
+      .query("roleDefinitions")
+      .withIndex("by_name", (q) => q.eq("name", args.name))
+      .collect();
+
+    const duplicate = existing.find((r) => {
+      if (!r.scope && !args.scope) return true;
+      if (!r.scope || !args.scope) return false;
+      return r.scope.type === args.scope.type && r.scope.id === args.scope.id;
+    });
+
+    if (duplicate) {
+      throw new ConvexError({
+        code: "ALREADY_EXISTS",
+        message: `Role "${args.name}" already exists with the same scope`,
+      });
+    }
+
+    // If parentRole is specified, validate it exists
+    if (args.parentRole) {
+      const parentRoleName = args.parentRole;
+      const parentDefs = await ctx.db
+        .query("roleDefinitions")
+        .withIndex("by_name", (q) => q.eq("name", parentRoleName))
+        .collect();
+
+      // Parent must be a system role or in the same scope
+      const validParent = parentDefs.find((p) => {
+        if (!p.scope) return true; // System role is always valid parent
+        if (!args.scope) return false; // Custom role can't inherit from scoped role
+        return p.scope.type === args.scope.type && p.scope.id === args.scope.id;
+      });
+
+      if (!validParent) {
+        throw new ConvexError({
+          code: "INVALID_PARENT",
+          message: `Parent role "${args.parentRole}" not found or not accessible in this scope`,
+        });
+      }
+    }
+
+    const roleId = await ctx.db.insert("roleDefinitions", {
+      name: args.name,
+      scope: args.scope,
+      permissions: args.permissions,
+      parentRole: args.parentRole,
+      isSystem: args.isSystem,
+      label: args.label,
+      description: args.description,
+      createdBy: args.createdBy,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return roleId as string;
+  },
+});
+
+/**
+ * Update a role definition (custom roles only)
+ */
+export const updateRoleDefinition = mutation({
+  args: {
+    roleId: v.id("roleDefinitions"),
+    permissions: v.optional(v.array(v.string())),
+    parentRole: v.optional(v.union(v.string(), v.null())),
+    label: v.optional(v.string()),
+    description: v.optional(v.string()),
+    updatedBy: v.optional(v.string()),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const role = await ctx.db.get(args.roleId);
+    if (!role) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Role definition not found",
+      });
+    }
+
+    if (role.isSystem) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message: "Cannot modify system roles",
+      });
+    }
+
+    const updates: Record<string, unknown> = {
+      updatedAt: Date.now(),
+    };
+
+    if (args.permissions !== undefined) {
+      updates.permissions = args.permissions;
+    }
+    if (args.parentRole !== undefined) {
+      updates.parentRole = args.parentRole === null ? undefined : args.parentRole;
+    }
+    if (args.label !== undefined) {
+      updates.label = args.label;
+    }
+    if (args.description !== undefined) {
+      updates.description = args.description;
+    }
+
+    await ctx.db.patch(args.roleId, updates);
+    return true;
+  },
+});
+
+/**
+ * Delete a role definition (custom roles only)
+ */
+export const deleteRoleDefinition = mutation({
+  args: {
+    roleId: v.id("roleDefinitions"),
+    deletedBy: v.optional(v.string()),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const role = await ctx.db.get(args.roleId);
+    if (!role) {
+      return false;
+    }
+
+    if (role.isSystem) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message: "Cannot delete system roles",
+      });
+    }
+
+    // Check if any roles inherit from this one
+    const childRoles = await ctx.db
+      .query("roleDefinitions")
+      .filter((q) => q.eq(q.field("parentRole"), role.name))
+      .collect();
+
+    if (childRoles.length > 0) {
+      throw new ConvexError({
+        code: "HAS_CHILDREN",
+        message: `Cannot delete role "${role.name}" because ${childRoles.length} roles inherit from it`,
+      });
+    }
+
+    // Optionally: revoke all assignments of this role
+    // For now, we'll leave assignments orphaned (they won't grant permissions)
+
+    await ctx.db.delete(args.roleId);
+    return true;
+  },
+});
+
+/**
+ * Sync system role definitions from config
+ * Called by the client on initialization when allowCustomRoles is enabled
+ */
+export const syncSystemRoles = mutation({
+  args: {
+    roles: v.array(
+      v.object({
+        name: v.string(),
+        permissions: v.array(v.string()),
+        parentRole: v.optional(v.string()),
+        label: v.optional(v.string()),
+        description: v.optional(v.string()),
+      })
+    ),
+  },
+  returns: v.object({
+    created: v.number(),
+    updated: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    let created = 0;
+    let updated = 0;
+
+    for (const role of args.roles) {
+      // Check if system role already exists
+      const existing = await ctx.db
+        .query("roleDefinitions")
+        .withIndex("by_name", (q) => q.eq("name", role.name))
+        .filter((q) => q.eq(q.field("isSystem"), true))
+        .first();
+
+      if (existing) {
+        // Update if permissions changed
+        if (JSON.stringify(existing.permissions) !== JSON.stringify(role.permissions)) {
+          await ctx.db.patch(existing._id, {
+            permissions: role.permissions,
+            parentRole: role.parentRole,
+            label: role.label,
+            description: role.description,
+            updatedAt: now,
+          });
+          updated++;
+        }
+      } else {
+        // Create new system role
+        await ctx.db.insert("roleDefinitions", {
+          name: role.name,
+          scope: undefined,
+          permissions: role.permissions,
+          parentRole: role.parentRole,
+          isSystem: true,
+          label: role.label,
+          description: role.description,
+          createdAt: now,
+          updatedAt: now,
+        });
+        created++;
+      }
+    }
+
+    return { created, updated };
+  },
+});
+

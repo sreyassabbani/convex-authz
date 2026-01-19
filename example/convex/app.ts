@@ -6,64 +6,42 @@
 
 import { mutation, query, type QueryCtx, type MutationCtx } from "./_generated/server.js";
 import { components } from "./_generated/api.js";
-import {
-  Authz,
-  definePermissions,
-  defineRoles,
-  defineAuthzConfig,
-  AnyRole,
-  GlobalRole,
-  AnyPermission,
-} from "@djpanda/convex-authz";
-import { v, type Validator } from "convex/values";
+import { defineAuthz, type Scope } from "@djpanda/convex-authz";
+import { v } from "convex/values";
 import { Auth } from "convex/server";
+import { DataModel } from "./_generated/dataModel.js";
 
 // ============================================================================
-// Step 1: Define your permissions
+// Step 1: Define your Permissions and Roles in one place
 // ============================================================================
-const permissions = definePermissions({
-  documents: { create: true, read: true, update: true, delete: true },
-  settings: { view: true, manage: true },
-  users: { invite: true, remove: true, manage: true },
-  billing: { view: true, manage: true },
-});
 
-// ============================================================================
-// Step 2: Define roles for each scope
-// ============================================================================
-const globalRoles = defineRoles(permissions, {
-  admin: {
+export const authz = defineAuthz(components.authz, {
+  permissions: {
     documents: ["create", "read", "update", "delete"],
     settings: ["view", "manage"],
     users: ["invite", "remove", "manage"],
     billing: ["view", "manage"],
   },
-});
-
-const orgRoles = defineRoles(permissions, {
-  admin: {
-    documents: ["create", "read", "update", "delete"],
-    settings: ["view"],
-    users: ["invite", "remove"],
-  },
-  member: {
-    documents: ["read", "create"],
-    settings: ["view"],
-  },
-});
-
-// ============================================================================
-// Step 3: Combine into a full Authz config
-// ============================================================================
-const authzConfig = defineAuthzConfig({
-  permissions,
   roles: {
-    global: globalRoles,
-    org: orgRoles,
+    // Global Roles
+    admin: {
+      permissions: ["documents:*", "settings:*", "users:*", "billing:*"],
+      label: "Global Admin",
+      description: "Full access to all resources across all orgs",
+    },
+    // Scoped Orgs Roles
+    "org:admin": {
+      permissions: ["documents:*", "settings:*", "users:*"],
+      label: "Org Admin",
+      description: "Full administrative access within an organization",
+    },
+    "org:member": {
+      permissions: ["documents:read", "documents:create", "settings:view"],
+      label: "Org Member",
+      description: "Read/Write access to documents within an organization",
+    },
   },
 });
-
-const authz = new Authz(components.authz, { config: authzConfig });
 
 // ============================================================================
 // Queries
@@ -71,15 +49,6 @@ const authz = new Authz(components.authz, { config: authzConfig });
 
 export const listUsers = query({
   args: {},
-  returns: v.array(
-    v.object({
-      _id: v.id("users"),
-      _creationTime: v.number(),
-      name: v.string(),
-      email: v.string(),
-      avatar: v.optional(v.string()),
-    })
-  ),
   handler: async (ctx) => {
     return await ctx.db.query("users").collect();
   },
@@ -87,15 +56,6 @@ export const listUsers = query({
 
 export const listOrgs = query({
   args: {},
-  returns: v.array(
-    v.object({
-      _id: v.id("orgs"),
-      _creationTime: v.number(),
-      name: v.string(),
-      slug: v.string(),
-      plan: v.string(),
-    })
-  ),
   handler: async (ctx) => {
     return await ctx.db.query("orgs").collect();
   },
@@ -103,16 +63,6 @@ export const listOrgs = query({
 
 export const listDocuments = query({
   args: {},
-  returns: v.array(
-    v.object({
-      _id: v.id("documents"),
-      _creationTime: v.number(),
-      title: v.string(),
-      content: v.optional(v.string()),
-      orgId: v.id("orgs"),
-      authorId: v.id("users"),
-    })
-  ),
   handler: async (ctx) => {
     return await ctx.db.query("documents").collect();
   },
@@ -131,11 +81,9 @@ export const getUserWithRoles = query({
       }),
       roles: v.array(
         v.object({
-          _id: v.string(),
           role: v.string(),
           scope: v.optional(v.object({ type: v.string(), id: v.string() })),
           expiresAt: v.optional(v.number()),
-          metadata: v.optional(v.any()),
         })
       ),
       orgs: v.array(
@@ -181,33 +129,20 @@ export const getRoleDefinitions = query({
   args: {},
   returns: v.array(
     v.object({
-      name: v.string() as Validator<AnyRole<typeof authzConfig>>,
+      name: authz.validators.role,
       label: v.string(),
       description: v.string(),
       permissions: v.array(v.string()),
     })
   ),
   handler: async () => {
-    return [
-      {
-        name: "global:admin" as AnyRole<typeof authzConfig>,
-        label: "Global Admin",
-        description: "Full access to all resources across all orgs",
-        permissions: ["*"],
-      },
-      {
-        name: "org:admin" as AnyRole<typeof authzConfig>,
-        label: "Org Admin",
-        description: "Full administrative access within an organization",
-        permissions: ["documents:*", "settings:*", "users:*"],
-      },
-      {
-        name: "org:member" as AnyRole<typeof authzConfig>,
-        label: "Org Member",
-        description: "Read/Write access to documents within an organization",
-        permissions: ["documents:read", "documents:create", "settings:view"],
-      },
-    ];
+    // Transform the config into a list for the UI
+    return Object.entries(authz.config.roles).map(([name, def]) => ({
+      name: name as any,
+      label: def.label ?? name,
+      description: def.description ?? "",
+      permissions: def.permissions,
+    }));
   },
 });
 
@@ -247,12 +182,12 @@ export const getStats = query({
 export const checkPermission = query({
   args: {
     userId: v.id("users"),
-    permission: v.string() as Validator<AnyPermission<typeof authzConfig>>,
+    permission: authz.validators.permission,
     orgId: v.optional(v.id("orgs")),
   },
   returns: v.boolean(),
   handler: async (ctx, args) => {
-    const scope = args.orgId
+    const scope: Scope | undefined = args.orgId
       ? { type: "org", id: String(args.orgId) }
       : undefined;
     return await authz.can(ctx, String(args.userId), args.permission, scope);
@@ -266,7 +201,7 @@ export const checkAllPermissions = query({
   },
   returns: v.record(v.string(), v.boolean()),
   handler: async (ctx, args) => {
-    const scope = args.orgId
+    const scope: Scope | undefined = args.orgId
       ? { type: "org", id: String(args.orgId) }
       : undefined;
 
@@ -300,54 +235,34 @@ export const checkAllPermissions = query({
 export const assignRole = mutation({
   args: {
     userId: v.id("users"),
-    role: v.string() as Validator<AnyRole<typeof authzConfig>>, // Strictly typed
+    role: authz.validators.role,
     orgId: v.optional(v.id("orgs")),
   },
   returns: v.string(),
   handler: async (ctx: MutationCtx, args) => {
-    const role = args.role;
-    if (role.includes(":")) {
-      const orgId = args.orgId ? String(args.orgId) : "";
-      return await authz.assignRole(
-        ctx,
-        String(args.userId),
-        role,
-        orgId
-      );
-    } else {
-      return await authz.assignRole(
-        ctx,
-        String(args.userId),
-        role as GlobalRole<typeof authzConfig>
-      );
+    // For scoped roles, pass the scopeId as the parameter
+    if (args.role.startsWith("org:")) {
+      if (!args.orgId) throw new Error("orgId is required for org roles");
+      return await (authz.assignRole as any)(ctx, String(args.userId), args.role, String(args.orgId));
     }
+
+    return await (authz.assignRole as any)(ctx, String(args.userId), args.role);
   },
 });
 
 export const revokeRole = mutation({
   args: {
     userId: v.id("users"),
-    role: v.string() as Validator<AnyRole<typeof authzConfig>>,
+    role: authz.validators.role,
     orgId: v.optional(v.id("orgs")),
   },
   returns: v.boolean(),
   handler: async (ctx: MutationCtx, args) => {
-    const role = args.role;
-    if (role.includes(":")) {
-      const orgId = args.orgId ? String(args.orgId) : "";
-      return await authz.revokeRole(
-        ctx,
-        String(args.userId),
-        role,
-        orgId
-      );
-    } else {
-      return await authz.revokeRole(
-        ctx,
-        String(args.userId),
-        role as GlobalRole<typeof authzConfig>
-      );
+    if (args.role.startsWith("org:")) {
+      if (!args.orgId) throw new Error("orgId is required for org roles");
+      return await (authz.revokeRole as any)(ctx, String(args.userId), args.role, String(args.orgId));
     }
+    return await (authz.revokeRole as any)(ctx, String(args.userId), args.role);
   },
 });
 

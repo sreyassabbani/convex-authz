@@ -32,6 +32,30 @@ export default defineSchema({
     .index("by_role", ["role"])
     .index("by_user_and_role", ["userId", "role"]),
 
+  // Role definitions table - stores dynamic role definitions
+  // System roles are global, custom roles are scoped to a tenant
+  roleDefinitions: defineTable({
+    name: v.string(), // Role name (e.g., "cfo", "intern")
+    // Scope for custom roles (null = system role, global)
+    scope: v.optional(
+      v.object({
+        type: v.string(), // e.g., "org"
+        id: v.string(), // e.g., org ID
+      })
+    ),
+    permissions: v.array(v.string()), // ["billing:*", "reports:read"]
+    parentRole: v.optional(v.string()), // Inherits permissions from this role
+    isSystem: v.boolean(), // true = cannot be deleted/modified by users
+    label: v.optional(v.string()), // Human-readable label
+    description: v.optional(v.string()),
+    createdBy: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_name", ["name"])
+    .index("by_scope", ["scope.type", "scope.id"])
+    .index("by_name_and_scope", ["name", "scope.type", "scope.id"]),
+
   // User attributes table - stores user attributes for ABAC
   // Attributes can be used in policy conditions
   userAttributes: defineTable({

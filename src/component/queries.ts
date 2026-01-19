@@ -460,3 +460,136 @@ export const getAuditLog = query({
     }));
   },
 });
+
+// ============================================================================
+// Dynamic Role Definition Queries
+// ============================================================================
+
+/**
+ * Get all role definitions for a scope (includes system roles + custom roles)
+ */
+export const getRoleDefinitions = query({
+  args: {
+    scope: v.optional(
+      v.object({
+        type: v.string(),
+        id: v.string(),
+      })
+    ),
+  },
+  returns: v.array(
+    v.object({
+      _id: v.string(),
+      name: v.string(),
+      scope: v.optional(
+        v.object({
+          type: v.string(),
+          id: v.string(),
+        })
+      ),
+      permissions: v.array(v.string()),
+      parentRole: v.optional(v.string()),
+      isSystem: v.boolean(),
+      label: v.optional(v.string()),
+      description: v.optional(v.string()),
+    })
+  ),
+  handler: async (ctx, args) => {
+    // Get all system roles (no scope)
+    const systemRoles = await ctx.db
+      .query("roleDefinitions")
+      .filter((q) => q.eq(q.field("isSystem"), true))
+      .collect();
+
+    // Get custom roles for this scope
+    let scopedRoles: typeof systemRoles = [];
+    if (args.scope) {
+      const allScopedRoles = await ctx.db
+        .query("roleDefinitions")
+        .filter((q) => q.eq(q.field("isSystem"), false))
+        .collect();
+
+      scopedRoles = allScopedRoles.filter(
+        (r) =>
+          r.scope &&
+          r.scope.type === args.scope!.type &&
+          r.scope.id === args.scope!.id
+      );
+    }
+
+    return [...systemRoles, ...scopedRoles].map((r) => ({
+      _id: r._id as string,
+      name: r.name,
+      scope: r.scope,
+      permissions: r.permissions,
+      parentRole: r.parentRole,
+      isSystem: r.isSystem,
+      label: r.label,
+      description: r.description,
+    }));
+  },
+});
+
+/**
+ * Resolve effective permissions for a role, including hierarchy
+ */
+export const resolveRolePermissions = query({
+  args: {
+    roleName: v.string(),
+    scope: v.optional(
+      v.object({
+        type: v.string(),
+        id: v.string(),
+      })
+    ),
+  },
+  returns: v.object({
+    permissions: v.array(v.string()),
+    inheritedFrom: v.array(v.string()),
+  }),
+  handler: async (ctx, args) => {
+    const visited = new Set<string>();
+    const allPermissions: string[] = [];
+    const inheritedFrom: string[] = [];
+
+    const resolveRole = async (roleName: string) => {
+      if (visited.has(roleName)) return; // Prevent cycles
+      visited.add(roleName);
+
+      // Find role definition
+      const roleDefs = await ctx.db
+        .query("roleDefinitions")
+        .withIndex("by_name", (q) => q.eq("name", roleName))
+        .collect();
+
+      // Match by scope: system role or same scope
+      const roleDef = roleDefs.find((r) => {
+        if (!r.scope) return true; // System role
+        if (!args.scope) return false;
+        return r.scope.type === args.scope.type && r.scope.id === args.scope.id;
+      });
+
+      if (!roleDef) return;
+
+      // Add this role's permissions
+      allPermissions.push(...roleDef.permissions);
+
+      // Recursively resolve parent role
+      if (roleDef.parentRole) {
+        inheritedFrom.push(roleDef.parentRole);
+        await resolveRole(roleDef.parentRole);
+      }
+    };
+
+    await resolveRole(args.roleName);
+
+    // Deduplicate permissions
+    const uniquePermissions = [...new Set(allPermissions)];
+
+    return {
+      permissions: uniquePermissions,
+      inheritedFrom,
+    };
+  },
+});
+

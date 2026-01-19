@@ -9,65 +9,10 @@
  */
 
 import { mutation } from "./_generated/server.js";
-import { components } from "./_generated/api.js";
-import {
-  Authz,
-  definePermissions,
-  defineRoles,
-  defineAuthzConfig,
-  AnyRole,
-  GlobalRole,
-} from "@djpanda/convex-authz";
 import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel.js";
 import { DEMO_USERS, DEMO_ORGS, DEMO_DOCUMENTS } from "./constants.js";
-
-// ============================================================================
-// Step 1: Define permissions
-// ============================================================================
-const permissions = definePermissions({
-  documents: { create: true, read: true, update: true, delete: true },
-  settings: { view: true, manage: true },
-  users: { invite: true, remove: true, manage: true },
-  billing: { view: true, manage: true },
-});
-
-// ============================================================================
-// Step 2: Define roles for each scope
-// ============================================================================
-const globalRoles = defineRoles(permissions, {
-  admin: {
-    documents: ["create", "read", "update", "delete"],
-    settings: ["view", "manage"],
-    users: ["invite", "remove", "manage"],
-    billing: ["view", "manage"],
-  },
-});
-
-const orgRoles = defineRoles(permissions, {
-  admin: {
-    documents: ["create", "read", "update", "delete"],
-    settings: ["view"],
-    users: ["invite", "remove"],
-  },
-  member: {
-    documents: ["read", "create"],
-    settings: ["view"],
-  },
-});
-
-// ============================================================================
-// Step 3: Combine into a full Authz config
-// ============================================================================
-const authzConfig = defineAuthzConfig({
-  permissions,
-  roles: {
-    global: globalRoles,
-    org: orgRoles,
-  },
-});
-
-const authz = new Authz(components.authz, { config: authzConfig });
+import { authz } from "./app.js";
 
 /**
  * Seed all demo data
@@ -148,11 +93,11 @@ export const seedAll = mutation({
       if (user.role && user.org) {
         try {
           // In the demo, we assume these are org-level roles
-          const roleName = `org:${user.role}` as AnyRole<typeof authzConfig>;
+          // Usage of new API: assignRole(ctx, userId, roleName, scopeId)
           await authz.assignRole(
             ctx,
             String(userId),
-            roleName,
+            `org:${user.role}` as any,
             String(orgMap[user.org])
           );
           roleAssignments++;
@@ -262,23 +207,20 @@ export const clearAll = mutation({
       const userRoles = await authz.getUserRoles(ctx, String(user._id));
       for (const role of userRoles) {
         try {
-          // Parse the role back for revocation
-          const fullRoleName = (role.scope
-            ? `${role.scope.type}:${role.role}`
-            : role.role) as AnyRole<typeof authzConfig>;
-
-          if (fullRoleName.includes(":")) {
-            await authz.revokeRole(
+          if (role.scope) {
+            // For scoped role, we need to pass the scope ID
+            // The role name in "role.role" is fully qualified e.g. "org:admin"
+            await (authz.revokeRole as any)(
               ctx,
               String(user._id),
-              fullRoleName,
-              role.scope?.id as string
+              role.role as any,
+              role.scope.id // Pass scope ID
             );
           } else {
-            await authz.revokeRole(
+            await (authz.revokeRole as any)(
               ctx,
               String(user._id),
-              fullRoleName as GlobalRole<typeof authzConfig>
+              role.role as any
             );
           }
         } catch {
