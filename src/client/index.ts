@@ -165,7 +165,7 @@ export function defineAuthz<
   const P extends PermissionsConfig,
 >(
   component: ComponentApi,
-  config: { permissions: P; roles: RolesConfig<P> },
+  config: { permissions: P; roles: RolesConfig<P>; allowCustomRoles?: boolean },
   options?: AuthzOptions
 ) {
   // Cast to any to resolve variance issues between generic P and base PermissionsConfig
@@ -257,46 +257,63 @@ export class Authz<C extends AuthzConfig<any>> {
   // The User wanted "intuitive". `type` is often redundant if implied by permission resource? 
   // "documents:read" -> type "documents"? Not always. Could be "org".
 
-  async hasRole<R extends RoleName<C>>(
+  async hasRole<R extends RoleName<C> | string>(
     ctx: QueryCtx | ActionCtx,
     userId: string,
     role: R,
-    ...args: ScopeArgs<R>
+    ...args: (string | Scope | undefined)[]
   ): Promise<boolean> {
-    const [scopeId] = args;
-    const { role: roleName, scope } = this.parseRole(role, scopeId);
+    let scope: Scope | undefined;
+    const firstArg = args[0];
+
+    if (typeof firstArg === "string") {
+      scope = this.parseRole(role, firstArg).scope;
+    } else if (firstArg && typeof firstArg === "object" && "type" in firstArg) {
+      scope = firstArg;
+    } else {
+      scope = this.parseRole(role).scope;
+    }
 
     return await ctx.runQuery(this.component.queries.hasRole, {
       userId,
-      role: roleName, // Passing full "org:admin" as role name
+      role: this.parseRole(role).role, // Use parsed role name (strips prefix if needed, though usually we keep full name)
       scope,
     });
   }
 
   /* --- Management Mutations --- */
 
-  async assignRole<R extends RoleName<C>>(
+  async assignRole<R extends RoleName<C> | string>(
     ctx: MutationCtx | ActionCtx,
     userId: string,
     role: R,
-    ...args: [...ScopeArgs<R>, expiresAt?: number]
+    ...args: (string | number | Scope | undefined)[]
   ): Promise<string> {
-    // Handle variable arguments
-    let scopeId: string | undefined;
+    let scope: Scope | undefined;
     let expiresAt: number | undefined;
 
-    if (role.includes(":")) {
-      scopeId = args[0] as string;
-      expiresAt = args[1] as number | undefined;
-    } else {
-      expiresAt = args[0] as number | undefined;
-    }
+    const firstArg = args[0];
+    const secondArg = args[1];
 
-    const { role: roleName, scope } = this.parseRole(role, scopeId);
+    if (typeof firstArg === "string") {
+      // (scopeId, expiresAt?)
+      scope = this.parseRole(role, firstArg).scope;
+      expiresAt = secondArg as number | undefined;
+    } else if (firstArg && typeof firstArg === "object" && "type" in firstArg) {
+      // (Scope, expiresAt?)
+      scope = firstArg;
+      expiresAt = secondArg as number | undefined;
+    } else if (typeof firstArg === "number") {
+      // (expiresAt)
+      expiresAt = firstArg;
+      scope = this.parseRole(role).scope;
+    } else {
+      scope = this.parseRole(role).scope;
+    }
 
     return await ctx.runMutation(this.component.mutations.assignRole, {
       userId,
-      role: roleName,
+      role: this.parseRole(role).role,
       scope,
       expiresAt,
       assignedBy: this.options.defaultActorId,
@@ -304,18 +321,26 @@ export class Authz<C extends AuthzConfig<any>> {
     });
   }
 
-  async revokeRole<R extends RoleName<C>>(
+  async revokeRole<R extends RoleName<C> | string>(
     ctx: MutationCtx | ActionCtx,
     userId: string,
     role: R,
-    ...args: ScopeArgs<R>
+    ...args: (string | Scope | undefined)[]
   ): Promise<boolean> {
-    const [scopeId] = args;
-    const { role: roleName, scope } = this.parseRole(role, scopeId);
+    let scope: Scope | undefined;
+    const firstArg = args[0];
+
+    if (typeof firstArg === "string") {
+      scope = this.parseRole(role, firstArg).scope;
+    } else if (firstArg && typeof firstArg === "object" && "type" in firstArg) {
+      scope = firstArg;
+    } else {
+      scope = this.parseRole(role).scope;
+    }
 
     return await ctx.runMutation(this.component.mutations.revokeRole, {
       userId,
-      role: roleName,
+      role: this.parseRole(role).role,
       scope,
       revokedBy: this.options.defaultActorId,
       enableAudit: true,
@@ -543,73 +568,63 @@ export class IndexedAuthz<C extends AuthzConfig<any>> extends Authz<C> {
   }
 
   // Override hasRole to use fast path
-  async hasRole<R extends RoleName<C>>(
+  async hasRole<R extends RoleName<C> | string>(
     ctx: QueryCtx | ActionCtx,
     userId: string,
     role: R,
-    ...args: ScopeArgs<R>
+    ...args: (string | Scope | undefined)[]
   ): Promise<boolean> {
-    const [scopeId] = args;
-    const { role: roleName, scope } = this.parseRole(role, scopeId);
+    let scope: Scope | undefined;
+    const firstArg = args[0];
+
+    if (typeof firstArg === "string") {
+      scope = this.parseRole(role, firstArg).scope;
+    } else if (firstArg && typeof firstArg === "object" && "type" in firstArg) {
+      scope = firstArg;
+    } else {
+      scope = this.parseRole(role).scope;
+    }
 
     return await ctx.runQuery(this.component.indexed.hasRoleFast, {
       userId,
-      role: roleName,
+      role: this.parseRole(role).role,
       objectType: scope?.type,
       objectId: scope?.id,
     });
   }
 
-  // Override assign to use compute
-  async assignRole<R extends RoleName<C>>(
+  async assignRole<R extends RoleName<C> | string>(
     ctx: MutationCtx | ActionCtx,
     userId: string,
     role: R,
-    ...args: [...ScopeArgs<R>, expiresAt?: number]
+    ...args: (string | number | Scope | undefined)[]
   ): Promise<string> {
-    let scopeId: string | undefined;
+    let scope: Scope | undefined;
     let expiresAt: number | undefined;
 
-    if (role.includes(":")) {
-      scopeId = args[0] as string;
-      expiresAt = args[1] as number | undefined;
+    const firstArg = args[0];
+    const secondArg = args[1];
+
+    if (typeof firstArg === "string") {
+      scope = this.parseRole(role, firstArg).scope;
+      expiresAt = secondArg as number | undefined;
+    } else if (firstArg && typeof firstArg === "object" && "type" in firstArg) {
+      scope = firstArg;
+      expiresAt = secondArg as number | undefined;
+    } else if (typeof firstArg === "number") {
+      expiresAt = firstArg;
+      scope = this.parseRole(role).scope;
     } else {
-      expiresAt = args[0] as number | undefined;
+      scope = this.parseRole(role).scope;
     }
 
-    const { role: roleName, scope } = this.parseRole(role, scopeId);
-
-    // Get permissions for this role to pre-compute
-    const permissions = this.config.roles[roleName]?.permissions || [];
-    // We currently flatten wildcards in the backend or frontend? 
-    // The `flattenRolePermissions` helper logic needs to be applied.
-    // We'll assume the backend logic handles expansion OR we do it here.
-    // The `indexed.assignRoleWithCompute` expects `rolePermissions` array.
-
-    // We need to expand "documents:*" to actual permissions if keeping optimization?
-    // Simplest is to pass the definition and let the backend handle matching logic 
-    // BUT `indexed.ts` writes specific permission entries.
-    // So we should expand wildcards here if possible. This requires knowing all possible permissions.
-
-    const allPermissions = this.config.roles[roleName]?.permissions || [];
-    // Note: If we support wildcards in indexed mode, we need to expand them to ALL valid permissions matching the wildcard.
-    // This requires iterating `this.config.permissions`.
-
-    const expandedPermissions: string[] = [];
-    for (const permPattern of allPermissions) {
-      if (permPattern.includes("*")) {
-        // Expand wildcard against config.permissions
-        // Logic omitted for brevity but recommended for full consistency
-        expandedPermissions.push(permPattern);
-      } else {
-        expandedPermissions.push(permPattern);
-      }
-    }
+    const { role: parsedRoleName } = this.parseRole(role);
+    const rolePermissions = this.config.roles[parsedRoleName]?.permissions || [];
 
     return await ctx.runMutation(this.component.indexed.assignRoleWithCompute, {
       userId,
-      role: roleName,
-      rolePermissions: expandedPermissions,
+      role: parsedRoleName,
+      rolePermissions: rolePermissions,
       scope,
       expiresAt,
       assignedBy: this.options.defaultActorId,

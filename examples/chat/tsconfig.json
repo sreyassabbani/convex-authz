@@ -25,16 +25,16 @@
         "./convex/*"
       ],
       "@djpanda/convex-authz": [
-        "../src/client/index.ts"
+        "../../src/client/index.ts"
       ],
       "@djpanda/convex-authz/react": [
-        "../src/react/index.ts"
+        "../../src/react/index.ts"
       ],
       "@djpanda/convex-authz/test": [
-        "../src/test.ts"
+        "../../src/test.ts"
       ],
       "@djpanda/convex-authz/convex.config.js": [
-        "../src/component/convex.config.ts"
+        "../../src/component/convex.config.ts"
       ]
     }
   },

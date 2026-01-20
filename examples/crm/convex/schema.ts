@@ -2,7 +2,6 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
 export default defineSchema({
-  // Demo app tables for showing authorization in action
   users: defineTable({
     name: v.string(),
     email: v.string(),
@@ -15,18 +14,16 @@ export default defineSchema({
     plan: v.string(),
   }).index("by_slug", ["slug"]),
 
-  org_members: defineTable({
-    orgId: v.id("orgs"),
-    userId: v.id("users"),
-  })
-    .index("by_org", ["orgId"])
-    .index("by_user", ["userId"])
-    .index("by_org_user", ["orgId", "userId"]),
+  contacts: defineTable({
+    orgId: v.string(),
+    name: v.string(),
+    email: v.string(),
+  }).index("by_org", ["orgId"]),
 
-  documents: defineTable({
+  deals: defineTable({
+    orgId: v.string(),
     title: v.string(),
-    content: v.optional(v.string()),
-    orgId: v.id("orgs"),
-    authorId: v.id("users"),
+    value: v.number(),
+    stage: v.string(),
   }).index("by_org", ["orgId"]),
 });

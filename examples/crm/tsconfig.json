@@ -1,0 +1,46 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "lib": [
+      "DOM",
+      "DOM.Iterable",
+      "ESNext"
+    ],
+    "skipLibCheck": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ],
+      "@convex/*": [
+        "./convex/*"
+      ],
+      "@djpanda/convex-authz": [
+        "../../src/client/index.ts"
+      ],
+      "@djpanda/convex-authz/react": [
+        "../../src/react/index.ts"
+      ],
+      "@djpanda/convex-authz/test": [
+        "../../src/test.ts"
+      ],
+      "@djpanda/convex-authz/convex.config.js": [
+        "../../src/component/convex.config.ts"
+      ]
+    }
+  },
+  "include": [
+    "./src",
+    "./convex",
+    "vite.config.ts"
+  ]
+}

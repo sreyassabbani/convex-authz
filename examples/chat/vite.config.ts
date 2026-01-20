@@ -5,7 +5,7 @@ import path from "path";
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  envDir: "../",
+  envDir: "../../",
   plugins: [react(), tailwindcss()],
   resolve: {
     conditions: ["@convex-dev/component-source"],
