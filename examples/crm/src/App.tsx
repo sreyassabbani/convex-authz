@@ -2,7 +2,7 @@ import { useQuery, useMutation } from "convex/react";
 import { api as apiGeneric } from "../convex/_generated/api";
 import { useState } from "react";
 
-const api = apiGeneric as any;
+const api = apiGeneric;
 
 // Simple types for verification
 interface Access {

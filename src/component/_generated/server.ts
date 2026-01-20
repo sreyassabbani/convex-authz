@@ -2,7 +2,7 @@
 /**
  * Generated utilities for implementing server-side Convex query and mutation functions.
  *
- * THIS CODE IS AUTOMATICALLY GENERATED.
+ * THIS CODE IS AUTOMATIC$ALLY GENERATED.
  *
  * To regenerate, run `npx convex dev`.
  * @module

@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import { authz } from "./authz";
+import { authz, P } from "./authz";
 
 /**
  * CRM: Create a custom role for an Organization (e.g. "Sales Manager")
@@ -18,7 +18,7 @@ export const createRole = mutation({
         const orgScope = { type: "org", id: args.orgId };
 
         // Only org owners can create new roles
-        if (!(await authz.can(ctx, userId, "org:manage_members", orgScope))) {
+        if (!(await authz.can(userId).perform(P.org.manage_members).in(orgScope).check(ctx))) {
             throw new Error("Unauthorized");
         }
 
@@ -46,7 +46,7 @@ export const assignRole = mutation({
         const userId = "user123";
         const orgScope = { type: "org", id: args.orgId };
 
-        if (!(await authz.can(ctx, userId, "org:manage_members", orgScope))) {
+        if (!(await authz.can(userId).perform(P.org.manage_members).in(orgScope).check(ctx))) {
             throw new Error("Unauthorized");
         }
 
@@ -65,9 +65,9 @@ export const checkAccess = query({
         const orgScope = { type: "org", id: args.orgId };
 
         return {
-            canViewDeals: await authz.can(ctx, userId, "deals:read", orgScope),
-            canCloseDeals: await authz.can(ctx, userId, "deals:close", orgScope),
-            canManageBilling: await authz.can(ctx, userId, "org:manage_billing", orgScope),
+            canViewDeals: await authz.can(userId).perform(P.deals.read).in(orgScope).check(ctx),
+            canCloseDeals: await authz.can(userId).perform(P.deals.close).in(orgScope).check(ctx),
+            canManageBilling: await authz.can(userId).perform(P.org.manage_billing).in(orgScope).check(ctx),
         };
     },
 });

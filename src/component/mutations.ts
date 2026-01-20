@@ -768,7 +768,13 @@ export const updateRoleDefinition = mutation({
       });
     }
 
-    const updates: Record<string, unknown> = {
+    const updates: {
+      updatedAt: number;
+      permissions?: string[];
+      parentRole?: string;
+      label?: string;
+      description?: string;
+    } = {
       updatedAt: Date.now(),
     };
 

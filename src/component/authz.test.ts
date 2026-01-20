@@ -364,7 +364,7 @@ describe("authz component", () => {
 
       expect(logs).toHaveLength(1);
       expect(logs[0].action).toBe("role_assigned");
-      expect(logs[0].details.role).toBe("admin");
+      expect((logs[0].details as { role: string }).role).toBe("admin");
     });
   });
 });

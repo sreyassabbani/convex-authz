@@ -199,12 +199,12 @@ export interface PolicyContext {
   subject: {
     userId: string;
     roles: string[];
-    attributes: Record<string, any>;
+    attributes: Record<string, string | number | boolean | null | Array<string | number | boolean | null> | Record<string, string | number | boolean | null>>;
   };
   resource?: {
     type: string;
     id: string;
-    attributes?: Record<string, any>;
+    attributes?: Record<string, string | number | boolean | null | Array<string | number | boolean | null> | Record<string, string | number | boolean | null>>;
   };
   action: string;
   environment: {
@@ -213,15 +213,15 @@ export interface PolicyContext {
   };
   hasRole: (role: string) => boolean;
   hasAttribute: (key: string) => boolean;
-  getAttribute: <T = any>(key: string, defaultValue?: T) => T | undefined;
+  getAttribute: <T>(key: string, defaultValue?: T) => T | undefined;
 }
 
 export function createPolicyContext(
   userId: string,
   roles: string[],
-  userAttributes: Record<string, any>,
+  userAttributes: Record<string, string | number | boolean | null | Array<string | number | boolean | null> | Record<string, string | number | boolean | null>>,
   action: string,
-  resource?: { type: string; id: string; attributes?: Record<string, any> },
+  resource?: { type: string; id: string; attributes?: Record<string, string | number | boolean | null | Array<string | number | boolean | null> | Record<string, string | number | boolean | null>> },
   environment?: { ip?: string }
 ): PolicyContext {
   return {
@@ -238,7 +238,7 @@ export function createPolicyContext(
     },
     hasRole: (role: string) => roles.includes(role),
     hasAttribute: (key: string) => key in userAttributes,
-    getAttribute: <T = any>(key: string, defaultValue?: T) =>
-      userAttributes[key] ?? defaultValue,
+    getAttribute: <T>(key: string, defaultValue?: T) =>
+      (userAttributes[key] as T) ?? defaultValue,
   };
 }

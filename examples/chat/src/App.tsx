@@ -3,7 +3,7 @@ import { api as apiGeneric } from "../convex/_generated/api";
 import { useState } from "react";
 import { Id } from "../convex/_generated/dataModel";
 
-const api = apiGeneric as any;
+const api = apiGeneric;
 
 interface Thread {
   _id: Id<"threads">;

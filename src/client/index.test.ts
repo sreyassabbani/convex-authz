@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { defineAuthz, type ComponentApi } from "./index.js";
+import type { GenericQueryCtx, GenericDataModel } from "convex/server";
+
+type QueryCtx = Pick<GenericQueryCtx<GenericDataModel>, "runQuery">;
 
 // Mock component API
-const mockComponent = {
+const mockComponent: ComponentApi = {
   queries: {
     checkPermission: "checkPermission",
     hasRole: "hasRole",
@@ -11,12 +14,17 @@ const mockComponent = {
   mutations: {
     assignRole: "assignRole",
     revokeRole: "revokeRole",
+    setAttribute: "setAttribute",
+    removeAttribute: "removeAttribute",
+    grantPermission: "grantPermission",
+    denyPermission: "denyPermission",
+    removePermissionOverride: "removePermissionOverride",
   },
-} as unknown as ComponentApi;
+} as any as ComponentApi; // We still need a small cast here because we're not providing all methods, but using any for easier mocking in tests is generally acceptable IF it doesn't leak. However, I will try to make it cleaner.
 
 describe("defineAuthz", () => {
-  it("should create an authz client with config", () => {
-    const authz = defineAuthz(mockComponent, {
+  it("should create an authz client with config and generators", () => {
+    const { authz, P } = defineAuthz(mockComponent, {
       permissions: {
         documents: ["read", "write"],
       },
@@ -31,6 +39,12 @@ describe("defineAuthz", () => {
     });
 
     expect(authz).toBeDefined();
+    expect(P).toBeDefined();
+
+    // Check selector generation
+    expect(P.documents.read).toEqual({ resource: "documents", action: "read" });
+    expect(P.documents.ALL).toEqual({ resource: "documents", action: "*" });
+
     expect(authz.config.roles.admin.permissions).toEqual(["documents:*"]);
 
     // Check internal mapping logic
@@ -41,7 +55,7 @@ describe("defineAuthz", () => {
   });
 
   it("should support indexed strategy", () => {
-    const authz = defineAuthz(mockComponent, {
+    const { authz } = defineAuthz(mockComponent, {
       permissions: {},
       roles: {},
     }, { strategy: "indexed" });
@@ -52,8 +66,11 @@ describe("defineAuthz", () => {
 });
 
 describe("Authz Client", () => {
-  const authz = defineAuthz(mockComponent, {
-    permissions: {},
+  const { authz, P } = defineAuthz(mockComponent, {
+    permissions: {
+      threads: ["read"],
+      org: ["manage"]
+    },
     roles: {
       "org:admin": { permissions: [] },
       "global_admin": { permissions: [] }
@@ -75,6 +92,47 @@ describe("Authz Client", () => {
         role: "org:admin",
         scope: { type: "org", id: "123" }
       });
+    });
+  });
+
+  describe("Fluent API", () => {
+    it("should chain perform and check correctly", async () => {
+      const ctx = {
+        runQuery: vi.fn().mockResolvedValue({ allowed: true })
+      } as any as QueryCtx;
+      const userId = "user1";
+
+      // Builder usage
+      const result = await authz.can(userId).perform(P.threads.read).check(ctx);
+
+      expect(result).toBe(true);
+      expect(ctx.runQuery).toHaveBeenCalledWith(
+        mockComponent.queries.checkPermission,
+        expect.objectContaining({
+          userId,
+          permission: "threads:read"
+        })
+      );
+    });
+
+    it("should chain scope correctly", async () => {
+      const ctx = {
+        runQuery: vi.fn().mockResolvedValue({ allowed: true })
+      } as any as QueryCtx;
+      const userId = "user1";
+      const orgScope = { type: "org", id: "1" };
+
+      // Builder usage with scope
+      await authz.can(userId).perform(P.org.manage).in(orgScope).check(ctx);
+
+      expect(ctx.runQuery).toHaveBeenCalledWith(
+        mockComponent.queries.checkPermission,
+        expect.objectContaining({
+          userId,
+          permission: "org:manage",
+          scope: orgScope
+        })
+      );
     });
   });
 });

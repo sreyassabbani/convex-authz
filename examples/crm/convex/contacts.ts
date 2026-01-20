@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import { authz } from "./authz";
+import { authz, P } from "./authz";
 
 /**
  * CRM: Create a new contact within an Organization.
@@ -16,7 +16,7 @@ export const create = mutation({
         const orgScope = { type: "org", id: args.orgId };
 
         // Check if user has permission in THIS specific organization
-        if (!(await authz.can(ctx, userId, "contacts:create", orgScope))) {
+        if (!(await authz.can(userId).perform(P.contacts.create).in(orgScope).check(ctx))) {
             throw new Error("Unauthorized: Cannot create contacts in this organization");
         }
 

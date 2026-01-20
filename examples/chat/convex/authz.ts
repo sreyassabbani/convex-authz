@@ -1,7 +1,7 @@
 import { defineAuthz } from "@djpanda/convex-authz";
 import { components } from "./_generated/api";
 
-export const authz = defineAuthz(components.authz, {
+export const { authz, P } = defineAuthz(components.authz, {
     permissions: {
         threads: ["read", "create", "delete"],
         admin: ["manage"],

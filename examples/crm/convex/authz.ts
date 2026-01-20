@@ -3,7 +3,7 @@ import { DataModel } from "./_generated/dataModel";
 
 import { components } from "./_generated/api";
 
-export const authz = defineAuthz(components.authz, {
+export const { authz, P } = defineAuthz(components.authz, {
     permissions: {
         contacts: ["read", "create", "update", "delete"],
         deals: ["read", "create", "update", "close"],

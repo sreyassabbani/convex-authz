@@ -15,6 +15,7 @@ import { v, type Validator } from "convex/values";
 import type { ComponentApi } from "../component/_generated/component.js";
 
 export type { ComponentApi } from "../component/_generated/component.js";
+import type { Id } from "../component/_generated/dataModel.js";
 
 // ============================================================================
 // Type Definitions
@@ -104,15 +105,15 @@ export interface AuthzOptions {
 /**
  * Extract all valid role names from the config
  */
-export type RoleName<C extends AuthzConfig> = keyof C["roles"] & string;
+export type RoleName<P extends PermissionsConfig> = keyof RolesConfig<P> & string;
 
 /**
  * Extract all valid permission strings from the config
  * e.g., "documents:read"
  */
-export type PermissionString<C extends AuthzConfig> = {
-  [R in keyof C["permissions"] & string]: `${R}:${C["permissions"][R][number] & string}`;
-}[keyof C["permissions"] & string];
+export type PermissionString<P extends PermissionsConfig> = {
+  [R in keyof P & string]: `${R}:${P[R][number] & string}`;
+}[keyof P & string];
 
 /**
  * Helper to get the scope part of a role (e.g., "org" from "org:admin")
@@ -135,6 +136,48 @@ export type ScopeArgs<R extends string> = ScopeName<R> extends "global"
 export interface Scope {
   type: string;
   id: string;
+}
+
+/**
+ * A typed permission selector (e.g. P.threads.read)
+ */
+export interface PermissionSelector<Resource extends string, Action extends string> {
+  resource: Resource;
+  action: Action;
+}
+
+/**
+ * Type helper to generate the structure of 'P' from PermissionsConfig
+ */
+export type Selectors<P extends PermissionsConfig> = {
+  [R in keyof P & string]: {
+    [A in P[R][number] & string]: PermissionSelector<R, A>;
+  } & {
+    /**
+     * Wildcard selector for this resource (e.g. "threads:*")
+     */
+    ALL: PermissionSelector<R, "*">;
+  };
+};
+
+/**
+ * Helper to generate the runtime 'P' object
+ */
+export function createSelectors<const P extends PermissionsConfig>(permissions: P): Selectors<P> {
+  const selectors: Partial<Selectors<P>> = {};
+
+  for (const resource of Object.keys(permissions)) {
+    const actions = permissions[resource];
+    const resourceSelectors: Record<string, PermissionSelector<string, string>> = {
+      ALL: { resource, action: "*" }
+    };
+    for (const action of actions) {
+      resourceSelectors[action] = { resource, action };
+    }
+    (selectors as Record<string, Record<string, PermissionSelector<string, string>>>)[resource] = resourceSelectors;
+  }
+
+  return selectors as Selectors<P>;
 }
 
 // ============================================================================
@@ -168,12 +211,16 @@ export function defineAuthz<
   config: { permissions: P; roles: RolesConfig<P>; allowCustomRoles?: boolean },
   options?: AuthzOptions
 ) {
-  // Cast to any to resolve variance issues between generic P and base PermissionsConfig
-  // The types at the call site are still fully checked
+  // The types at the call site are fully checked
+  // The types at the call site are fully checked. 
+  // We use a looser cast to AuthzConfig to bridge the generic P which has readonly constraints.
+  const authzConfig = config as AuthzConfig<P>;
   if (options?.strategy === "indexed") {
-    return new IndexedAuthz<AuthzConfig<P>>(component, config as any, options);
+    const authz = new IndexedAuthz<P>(component, authzConfig, options);
+    return { authz, P: createSelectors(config.permissions) };
   }
-  return new Authz<AuthzConfig<P>>(component, config as any, options);
+  const authz = new Authz<P>(component, authzConfig, options);
+  return { authz, P: createSelectors(config.permissions) };
 }
 
 // ============================================================================
@@ -188,17 +235,59 @@ type ActionCtx = Pick<
 >;
 
 /**
+ * Fluent Builder for Permission Checks
+ */
+export class PermissionBuilder<P extends PermissionsConfig> {
+  private selector?: { resource: string; action: string };
+  private scope?: Scope;
+
+  constructor(
+    private authz: Authz<P>,
+    private userId: string
+  ) { }
+
+  /**
+   * Specify the permission to check (e.g. P.threads.read)
+   */
+  perform<R extends string, A extends string>(selector: PermissionSelector<R, A>) {
+    this.selector = selector;
+    return this;
+  }
+
+  /**
+   * Specify the scope for this check (e.g. specific organization)
+   */
+  in(scope: Scope) {
+    this.scope = scope;
+    return this;
+  }
+
+  /**
+   * Execute the permission check
+   */
+  async check(ctx: QueryCtx | ActionCtx): Promise<boolean> {
+    if (!this.selector) throw new Error("No permission selector provided. Call .perform() first.");
+
+    // Construct the permission string "resource:action" expected by the backend
+    const permission = `${this.selector.resource}:${this.selector.action}` as PermissionString<P>;
+
+    // Call the internal check
+    return this.authz.can(ctx, this.userId, permission, this.scope);
+  }
+}
+
+/**
  * Standard Authz Client (Runtime Role Evaluation)
  */
-export class Authz<C extends AuthzConfig<any>> {
+export class Authz<P extends PermissionsConfig> {
   public readonly validators = {
-    role: v.string() as Validator<RoleName<C>>,
-    permission: v.string() as Validator<PermissionString<C>>,
+    role: v.string() as Validator<RoleName<P>>,
+    permission: v.string() as Validator<PermissionString<P>>,
   };
 
   constructor(
     public component: ComponentApi,
-    public config: C,
+    public config: AuthzConfig<P>,
     public options: AuthzOptions = {}
   ) { }
 
@@ -236,12 +325,49 @@ export class Authz<C extends AuthzConfig<any>> {
   /* --- Check Queries --- */
 
   /**
-   * Check if user has a permission
+   * Start a fluent permission check
+   * @param userId The user to check permissions for
    */
-  async can(
+  can(userId: string): PermissionBuilder<P>;
+
+  /**
+   * Check if user has a permission (Legacy/Internal)
+   */
+  can(
     ctx: QueryCtx | ActionCtx,
     userId: string,
-    permission: PermissionString<C>,
+    permission: PermissionString<P>,
+    scope?: Scope
+  ): Promise<boolean>;
+
+  can(
+    arg1: string | QueryCtx | ActionCtx,
+    arg2?: string,
+    arg3?: PermissionString<P>,
+    arg4?: Scope
+  ): PermissionBuilder<P> | Promise<boolean> {
+    // Overload 1: can(userId) -> Builder
+    if (typeof arg1 === "string" && !arg2) {
+      return new PermissionBuilder(this, arg1);
+    }
+
+    // Overload 2: can(ctx, userId, permission, scope) -> Promise<boolean>
+    // We use type guards/assertions to ensure types are correct before calling runCheck
+    return this.runCheck(
+      arg1 as QueryCtx | ActionCtx,
+      arg2 as string,
+      arg3 as PermissionString<P>,
+      arg4
+    );
+  }
+
+  /**
+   * Internal implementation of permission checking
+   */
+  protected async runCheck(
+    ctx: QueryCtx | ActionCtx,
+    userId: string,
+    permission: PermissionString<P>,
     scope?: Scope
   ): Promise<boolean> {
     return (await ctx.runQuery(this.component.queries.checkPermission, {
@@ -257,7 +383,7 @@ export class Authz<C extends AuthzConfig<any>> {
   // The User wanted "intuitive". `type` is often redundant if implied by permission resource? 
   // "documents:read" -> type "documents"? Not always. Could be "org".
 
-  async hasRole<R extends RoleName<C> | string>(
+  async hasRole<R extends RoleName<P> | string>(
     ctx: QueryCtx | ActionCtx,
     userId: string,
     role: R,
@@ -283,7 +409,7 @@ export class Authz<C extends AuthzConfig<any>> {
 
   /* --- Management Mutations --- */
 
-  async assignRole<R extends RoleName<C> | string>(
+  async assignRole<R extends RoleName<P> | string>(
     ctx: MutationCtx | ActionCtx,
     userId: string,
     role: R,
@@ -321,7 +447,7 @@ export class Authz<C extends AuthzConfig<any>> {
     });
   }
 
-  async revokeRole<R extends RoleName<C> | string>(
+  async revokeRole<R extends RoleName<P> | string>(
     ctx: MutationCtx | ActionCtx,
     userId: string,
     role: R,
@@ -425,7 +551,7 @@ export class Authz<C extends AuthzConfig<any>> {
     ctx: MutationCtx | ActionCtx,
     userId: string,
     key: string,
-    value: unknown,
+    value: string | number | boolean | null | Array<string | number | boolean | null> | Record<string, string | number | boolean | null>,
     assignedBy?: string
   ): Promise<string> {
     return await ctx.runMutation(this.component.mutations.setAttribute, {
@@ -507,7 +633,7 @@ export class Authz<C extends AuthzConfig<any>> {
     }
   ): Promise<boolean> {
     return await ctx.runMutation(this.component.mutations.updateRoleDefinition, {
-      roleId: roleId as any, // The component expects Id<"roleDefinitions">
+      roleId: roleId as Id<"roleDefinitions">,
       permissions: updates.permissions,
       parentRole: updates.parentRole,
       label: updates.label,
@@ -524,7 +650,7 @@ export class Authz<C extends AuthzConfig<any>> {
     roleId: string
   ): Promise<boolean> {
     return await ctx.runMutation(this.component.mutations.deleteRoleDefinition, {
-      roleId: roleId as any, // The component expects Id<"roleDefinitions">
+      roleId: roleId as Id<"roleDefinitions">,
       deletedBy: this.options.defaultActorId,
     });
   }
@@ -547,18 +673,15 @@ export class Authz<C extends AuthzConfig<any>> {
 /**
  * Indexed Authz Client (O(1) lookups)
  */
-export class IndexedAuthz<C extends AuthzConfig<any>> extends Authz<C> {
+export class IndexedAuthz<P extends PermissionsConfig> extends Authz<P> {
   // Override check to use fast path
-  async can(
+  // Override check to use fast path
+  protected async runCheck(
     ctx: QueryCtx | ActionCtx,
     userId: string,
-    permission: PermissionString<C>,
-    scopeId?: string | Scope
+    permission: PermissionString<P>,
+    scope?: Scope
   ): Promise<boolean> {
-    // For indexed lookups, scopeKey is typically "type:id" or "global"
-    // We need the type.
-    const scope = typeof scopeId === 'object' ? scopeId : undefined;
-
     return await ctx.runQuery(this.component.indexed.checkPermissionFast, {
       userId,
       permission,
@@ -568,7 +691,7 @@ export class IndexedAuthz<C extends AuthzConfig<any>> extends Authz<C> {
   }
 
   // Override hasRole to use fast path
-  async hasRole<R extends RoleName<C> | string>(
+  async hasRole<R extends RoleName<P> | string>(
     ctx: QueryCtx | ActionCtx,
     userId: string,
     role: R,
@@ -593,7 +716,7 @@ export class IndexedAuthz<C extends AuthzConfig<any>> extends Authz<C> {
     });
   }
 
-  async assignRole<R extends RoleName<C> | string>(
+  async assignRole<R extends RoleName<P> | string>(
     ctx: MutationCtx | ActionCtx,
     userId: string,
     role: R,

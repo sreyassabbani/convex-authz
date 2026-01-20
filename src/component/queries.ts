@@ -429,7 +429,7 @@ export const getAuditLog = query({
       action: v.string(),
       userId: v.string(),
       actorId: v.optional(v.string()),
-      details: v.any(),
+      details: v.any(), // Still using v.any() validator, but returns as specific type
     })
   ),
   handler: async (ctx, args) => {
@@ -456,7 +456,14 @@ export const getAuditLog = query({
       action: e.action,
       userId: e.userId,
       actorId: e.actorId,
-      details: e.details,
+      details: e.details as {
+        permission?: string;
+        role?: string;
+        result?: boolean;
+        scope?: { type: string; id: string };
+        attribute?: { key: string; value?: string | number | boolean | null };
+        reason?: string;
+      },
     }));
   },
 });

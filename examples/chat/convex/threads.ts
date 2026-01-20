@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import { authz } from "./authz";
+import { authz, P } from "./authz";
 
 /**
  * List threads user can see.
@@ -12,12 +12,12 @@ export const list = query({
         const userId = "user123";
 
         // Admin can see everything
-        if (await authz.can(ctx, userId, "admin:manage")) {
+        if (await authz.can(userId).perform(P.admin.manage).check(ctx)) {
             return ctx.db.query("threads").collect();
         }
 
         // Regular users see their own threads
-        if (await authz.can(ctx, userId, "threads:read")) {
+        if (await authz.can(userId).perform(P.threads.read).check(ctx)) {
             return ctx.db.query("threads")
                 .filter(q => q.eq(q.field("ownerId"), userId))
                 .collect();
@@ -35,7 +35,7 @@ export const create = mutation({
     handler: async (ctx, args) => {
         const userId = "user123";
 
-        if (!(await authz.can(ctx, userId, "threads:create"))) {
+        if (!(await authz.can(userId).perform(P.threads.create).check(ctx))) {
             throw new Error("Unauthorized");
         }
 
@@ -57,12 +57,12 @@ export const deleteThread = mutation({
         const thread = await ctx.db.get(args.threadId);
         if (!thread) throw new Error("Not found");
 
-        if (await authz.can(ctx, userId, "admin:manage")) {
+        if (await authz.can(userId).perform(P.admin.manage).check(ctx)) {
             await ctx.db.delete(args.threadId);
             return;
         }
 
-        if (thread.ownerId === userId && await authz.can(ctx, userId, "threads:delete")) {
+        if (thread.ownerId === userId && await authz.can(userId).perform(P.threads.delete).check(ctx)) {
             await ctx.db.delete(args.threadId);
             return;
         }

@@ -2,7 +2,7 @@
 /**
  * Generated `api` utility.
  *
- * THIS CODE IS AUTOMATICALLY GENERATED.
+ * THIS CODE IS AUTOMATIC$ALLY GENERATED.
  *
  * To regenerate, run `npx convex dev`.
  * @module

@@ -569,12 +569,12 @@ describe("Scenario: Users with Multiple Roles", () => {
     expect(roles).toHaveLength(3);
 
     // Filter roles by scope
-    const globalRoles = roles.filter((r: any) => !r.scope);
+    const globalRoles = roles.filter((r: { scope?: { type: string; id: string } }) => !r.scope);
     const teamEngRoles = roles.filter(
-      (r: any) => r.scope?.type === TYPES.team && r.scope?.id === TEAMS.acmeEng
+      (r: { scope?: { type: string; id: string } }) => r.scope?.type === TYPES.team && r.scope?.id === TEAMS.acmeEng
     );
     const teamSalesRoles = roles.filter(
-      (r: any) => r.scope?.type === TYPES.team && r.scope?.id === TEAMS.acmeSales
+      (r: { scope?: { type: string; id: string } }) => r.scope?.type === TYPES.team && r.scope?.id === TEAMS.acmeSales
     );
 
     expect(globalRoles).toHaveLength(1);
@@ -609,12 +609,12 @@ describe("Scenario: Users with Multiple Roles", () => {
       userId: USERS.alice,
     });
 
-    const permNames = permissions.map((p: any) => p.permission);
+    const permNames = permissions.map((p: { permission: string }) => p.permission);
     expect(permNames).toContain("documents:read");
     expect(permNames).toContain("documents:write");
 
     // Both roles should be sources for documents:read
-    const readPerm = permissions.find((p: any) => p.permission === "documents:read");
+    const readPerm = permissions.find((p: { permission: string }) => p.permission === "documents:read");
     expect(readPerm).toBeDefined();
     expect(readPerm!.sources).toContain("viewer");
     expect(readPerm!.sources).toContain("editor");
@@ -841,7 +841,7 @@ describe("Scenario: Audit Trail", () => {
 
     expect(logs.length).toBeGreaterThanOrEqual(3);
 
-    const actions = logs.map((l: any) => l.action);
+    const actions = logs.map((l: { action: string }) => l.action);
     expect(actions).toContain("role_assigned");
     expect(actions).toContain("role_revoked");
     expect(actions).toContain("permission_granted");
