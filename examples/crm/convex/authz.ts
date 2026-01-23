@@ -1,28 +1,72 @@
-import { defineAuthz } from "@djpanda/convex-authz";
-import { DataModel } from "./_generated/dataModel";
+import {
+  defineAuthz,
+  definePermissions,
+  defineRoles,
+  definePolicies,
+} from "@djpanda/convex-authz";
 
 import { components } from "./_generated/api";
 
-export const { authz, P } = defineAuthz(components.authz, {
+const permissions = definePermissions({
+  contacts: {
+    read: true,
+    create: true,
+    update: true,
+    delete: true,
+  },
+  deals: {
+    read: true,
+    create: true,
+    update: true,
+    close: true,
+  },
+  org: {
+    manage_members: true,
+    manage_billing: true,
+  },
+  system: {
+    manage: true,
+  },
+});
+
+const roles = defineRoles(permissions, {
+  superuser: {
     permissions: {
-        contacts: ["read", "create", "update", "delete"],
-        deals: ["read", "create", "update", "close"],
-        org: ["manage_members", "manage_billing"],
-        system: ["manage"],
+      system: ["manage"],
+      org: ["*"],
+      contacts: ["*"],
+      deals: ["*"],
     },
-    roles: {
-        superuser: {
-            permissions: ["system:manage", "org:*", "contacts:*", "deals:*"],
-            label: "Super User",
-        },
-        "org:owner": {
-            permissions: ["org:*", "contacts:*", "deals:*"],
-            label: "Organization Owner",
-        },
-        "org:member": {
-            permissions: ["contacts:read", "deals:read"],
-            label: "Organization Member",
-        },
+    label: "Super User",
+  },
+  "org:owner": {
+    permissions: {
+      org: ["*"],
+      contacts: ["*"],
+      deals: ["*"],
     },
-    allowCustomRoles: true,
+    label: "Organization Owner",
+  },
+  "org:member": {
+    permissions: {
+      contacts: ["read"],
+      deals: ["read"],
+    },
+    label: "Organization Member",
+  },
+});
+
+const policies = definePolicies(permissions, {
+  "deals:close": {
+    condition: (ctx) =>
+      ctx.hasRole("org:owner") || ctx.getAttribute<boolean>("canCloseDeals") === true,
+    message: "Closing deals requires org ownership or explicit clearance.",
+  },
+});
+
+export const { authz, P } = defineAuthz(components.authz, {
+  permissions,
+  roles,
+  policies,
+  allowCustomRoles: true,
 });

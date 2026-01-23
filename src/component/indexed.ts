@@ -14,10 +14,40 @@
 
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
+import { parsePermission } from "./helpers";
 
 // ============================================================================
 // O(1) Permission Check - The Fast Path
 // ============================================================================
+
+const GLOBAL_SCOPE_KEY = "global";
+
+function buildScopeKeys(objectType?: string, objectId?: string): string[] {
+  if (objectType && objectId) {
+    return [`${objectType}:${objectId}`, GLOBAL_SCOPE_KEY];
+  }
+  return [GLOBAL_SCOPE_KEY];
+}
+
+function buildPermissionCandidates(permission: string): string[] {
+  if (permission === "*" || permission === "*:*") {
+    return ["*", "*:*"];
+  }
+
+  try {
+    const { resource, action } = parsePermission(permission);
+    const candidates = [
+      permission,
+      `${resource}:*`,
+      `*:${action}`,
+      "*:*",
+      "*",
+    ];
+    return Array.from(new Set(candidates));
+  } catch {
+    return [permission];
+  }
+}
 
 /**
  * Check permission with O(1) lookup
@@ -32,32 +62,39 @@ export const checkPermissionFast = query({
   },
   returns: v.boolean(),
   handler: async (ctx, args) => {
-    // Build the lookup key
-    const scopeKey = args.objectType && args.objectId
-      ? `${args.objectType}:${args.objectId}`
-      : "global";
+    const scopeKeys = buildScopeKeys(args.objectType, args.objectId);
+    const permissionCandidates = buildPermissionCandidates(args.permission);
 
-    // O(1) indexed lookup
-    const cached = await ctx.db
-      .query("effectivePermissions")
-      .withIndex("by_user_permission_scope", (q) =>
-        q
-          .eq("userId", args.userId)
-          .eq("permission", args.permission)
-          .eq("scopeKey", scopeKey)
-      )
-      .unique();
+    let allowed = false;
+    for (const scopeKey of scopeKeys) {
+      for (const permission of permissionCandidates) {
+        const cached = await ctx.db
+          .query("effectivePermissions")
+          .withIndex("by_user_permission_scope", (q) =>
+            q
+              .eq("userId", args.userId)
+              .eq("permission", permission)
+              .eq("scopeKey", scopeKey)
+          )
+          .unique();
 
-    if (!cached) {
-      return false;
+        if (!cached) {
+          continue;
+        }
+
+        if (cached.expiresAt && cached.expiresAt < Date.now()) {
+          continue;
+        }
+
+        if (cached.effect === "deny") {
+          return false;
+        }
+
+        allowed = true;
+      }
     }
 
-    // Check if expired
-    if (cached.expiresAt && cached.expiresAt < Date.now()) {
-      return false;
-    }
-
-    return cached.effect === "allow";
+    return allowed;
   },
 });
 
@@ -73,31 +110,31 @@ export const hasRoleFast = query({
   },
   returns: v.boolean(),
   handler: async (ctx, args) => {
-    const scopeKey = args.objectType && args.objectId
-      ? `${args.objectType}:${args.objectId}`
-      : "global";
+    const scopeKeys = buildScopeKeys(args.objectType, args.objectId);
 
-    // O(1) indexed lookup
-    const cached = await ctx.db
-      .query("effectiveRoles")
-      .withIndex("by_user_role_scope", (q) =>
-        q
-          .eq("userId", args.userId)
-          .eq("role", args.role)
-          .eq("scopeKey", scopeKey)
-      )
-      .unique();
+    for (const scopeKey of scopeKeys) {
+      const cached = await ctx.db
+        .query("effectiveRoles")
+        .withIndex("by_user_role_scope", (q) =>
+          q
+            .eq("userId", args.userId)
+            .eq("role", args.role)
+            .eq("scopeKey", scopeKey)
+        )
+        .unique();
 
-    if (!cached) {
-      return false;
+      if (!cached) {
+        continue;
+      }
+
+      if (cached.expiresAt && cached.expiresAt < Date.now()) {
+        continue;
+      }
+
+      return true;
     }
 
-    // Check if expired
-    if (cached.expiresAt && cached.expiresAt < Date.now()) {
-      return false;
-    }
-
-    return true;
+    return false;
   },
 });
 
@@ -589,20 +626,21 @@ export const getUserPermissionsFast = query({
     })
   ),
   handler: async (ctx, args) => {
-    let permissions;
+    const scopeKeys = args.scopeKey
+      ? (args.scopeKey === GLOBAL_SCOPE_KEY
+        ? [GLOBAL_SCOPE_KEY]
+        : [args.scopeKey, GLOBAL_SCOPE_KEY])
+      : [GLOBAL_SCOPE_KEY];
 
-    if (args.scopeKey) {
-      permissions = await ctx.db
+    const permissions = [];
+    for (const scopeKey of scopeKeys) {
+      const scoped = await ctx.db
         .query("effectivePermissions")
         .withIndex("by_user_scope", (q) =>
-          q.eq("userId", args.userId).eq("scopeKey", args.scopeKey as string)
+          q.eq("userId", args.userId).eq("scopeKey", scopeKey)
         )
         .collect();
-    } else {
-      permissions = await ctx.db
-        .query("effectivePermissions")
-        .withIndex("by_user", (q) => q.eq("userId", args.userId))
-        .collect();
+      permissions.push(...scoped);
     }
 
     const now = Date.now();
@@ -630,23 +668,25 @@ export const getUserRolesFast = query({
       role: v.string(),
       scopeKey: v.string(),
       scope: v.optional(v.object({ type: v.string(), id: v.string() })),
+      expiresAt: v.optional(v.number()),
     })
   ),
   handler: async (ctx, args) => {
-    let roles;
+    const scopeKeys = args.scopeKey
+      ? (args.scopeKey === GLOBAL_SCOPE_KEY
+        ? [GLOBAL_SCOPE_KEY]
+        : [args.scopeKey, GLOBAL_SCOPE_KEY])
+      : [GLOBAL_SCOPE_KEY];
 
-    if (args.scopeKey) {
-      roles = await ctx.db
+    const roles = [];
+    for (const scopeKey of scopeKeys) {
+      const scoped = await ctx.db
         .query("effectiveRoles")
         .withIndex("by_user_scope", (q) =>
-          q.eq("userId", args.userId).eq("scopeKey", args.scopeKey as string)
+          q.eq("userId", args.userId).eq("scopeKey", scopeKey)
         )
         .collect();
-    } else {
-      roles = await ctx.db
-        .query("effectiveRoles")
-        .withIndex("by_user", (q) => q.eq("userId", args.userId))
-        .collect();
+      roles.push(...scoped);
     }
 
     const now = Date.now();
@@ -656,6 +696,7 @@ export const getUserRolesFast = query({
         role: r.role,
         scopeKey: r.scopeKey,
         scope: r.scope,
+        expiresAt: r.expiresAt,
       }));
   },
 });

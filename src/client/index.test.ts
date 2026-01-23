@@ -98,7 +98,7 @@ describe("Authz Client", () => {
   describe("Fluent API", () => {
     it("should chain perform and check correctly", async () => {
       const ctx = {
-        runQuery: vi.fn().mockResolvedValue({ allowed: true })
+        runQuery: vi.fn().mockResolvedValue({ allowed: true, reason: "ok" })
       } as any as QueryCtx;
       const userId = "user1";
 
@@ -117,7 +117,7 @@ describe("Authz Client", () => {
 
     it("should chain scope correctly", async () => {
       const ctx = {
-        runQuery: vi.fn().mockResolvedValue({ allowed: true })
+        runQuery: vi.fn().mockResolvedValue({ allowed: true, reason: "ok" })
       } as any as QueryCtx;
       const userId = "user1";
       const orgScope = { type: "org", id: "1" };
