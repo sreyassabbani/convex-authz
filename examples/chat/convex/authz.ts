@@ -1,38 +1,29 @@
 import {
-  defineAuthz,
-  definePermissions,
-  defineRoles,
+  authzConfig,
+  createAuthz,
 } from "@djpanda/convex-authz";
 import { components } from "./_generated/api";
 
-const permissions = definePermissions({
-  threads: {
-    read: true,
-    create: true,
-    delete: true,
+const config = authzConfig({
+  permissions: {
+    threads: ["read", "create", "delete"],
+    admin: ["manage"],
   },
-  admin: {
-    manage: true,
+  roles: {
+    admin: {
+      grants: {
+        admin: ["manage"],
+        threads: ["*"],
+      },
+      label: "Administrator",
+    },
+    user: {
+      grants: {
+        threads: ["create"],
+      },
+      label: "Standard User",
+    },
   },
 });
 
-const roles = defineRoles(permissions, {
-  admin: {
-    permissions: {
-      admin: ["manage"],
-      threads: ["*"],
-    },
-    label: "Administrator",
-  },
-  user: {
-    permissions: {
-      threads: ["create"],
-    },
-    label: "Standard User",
-  },
-});
-
-export const { authz, P } = defineAuthz(components.authz, {
-  permissions,
-  roles,
-});
+export const { authz, P } = createAuthz(components.authz, config);

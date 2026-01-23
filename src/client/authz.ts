@@ -15,14 +15,12 @@ import {
 import {
   createSelectors,
   normalizePermissionInput,
-  normalizeRolePermissions,
-  normalizeRoles,
+  normalizeRoleGrants,
 } from "./config.js";
 import type {
   AttributeValue,
   Attributes,
   AuthzConfig,
-  AuthzConfigInput,
   AuthzOptions,
   CheckOptions,
   CheckResult,
@@ -34,7 +32,7 @@ import type {
   RelationInput,
   ResourceContext,
   RoleName,
-  RolePermissionsInput,
+  RoleGrantsMap,
   PermissionsConfig,
   Scope,
   SubjectContextInput,
@@ -135,7 +133,7 @@ export class Authz<P extends PermissionsConfig> {
     permission: v.string() as Validator<PermissionString<P>>,
     permissionPattern: v.string() as Validator<ValidPermissionPattern<P>>,
   };
-  private rolePermissionsMap?: Record<string, ValidPermissionPattern<P>[]>;
+  private roleGrantsMap?: Record<string, ValidPermissionPattern<P>[]>;
 
   constructor(
     public component: ComponentApi,
@@ -144,10 +142,10 @@ export class Authz<P extends PermissionsConfig> {
   ) { }
 
   /**
-   * Helper to build the mapping of role -> permissions for the backend
+   * Helper to build the mapping of role -> grants for the backend
    */
-  protected getRolePermissionsMap(): Record<string, ValidPermissionPattern<P>[]> {
-    if (this.rolePermissionsMap) return this.rolePermissionsMap;
+  protected getRoleGrantsMap(): Record<string, ValidPermissionPattern<P>[]> {
+    if (this.roleGrantsMap) return this.roleGrantsMap;
 
     const map: Record<string, ValidPermissionPattern<P>[]> = {};
     const visiting = new Set<string>();
@@ -157,13 +155,13 @@ export class Authz<P extends PermissionsConfig> {
       const def = this.config.roles[roleName];
       if (!def) return [];
       if (visiting.has(roleName)) {
-        return def.permissions;
+        return def.grants;
       }
       visiting.add(roleName);
 
-      const permissions = [...def.permissions];
-      if (def.parentRole) {
-        permissions.push(...resolve(def.parentRole));
+      const permissions = [...def.grants];
+      if (def.inherits) {
+        permissions.push(...resolve(def.inherits));
       }
 
       const deduped = Array.from(new Set(permissions));
@@ -176,7 +174,7 @@ export class Authz<P extends PermissionsConfig> {
       resolve(roleName);
     }
 
-    this.rolePermissionsMap = map;
+    this.roleGrantsMap = map;
     return map;
   }
 
@@ -245,7 +243,7 @@ export class Authz<P extends PermissionsConfig> {
       userId,
       permission,
       scope,
-      rolePermissions: this.getRolePermissionsMap(),
+      rolePermissions: this.getRoleGrantsMap(),
     });
   }
 
@@ -550,7 +548,7 @@ export class Authz<P extends PermissionsConfig> {
     return await ctx.runQuery(this.component.queries.getEffectivePermissions, {
       userId,
       scope,
-      rolePermissions: this.getRolePermissionsMap(),
+      rolePermissions: this.getRoleGrantsMap(),
     });
   }
 
@@ -756,8 +754,8 @@ export class Authz<P extends PermissionsConfig> {
   async syncSystemRoles(ctx: MutationCtx | ActionCtx) {
     const roles = Object.entries(this.config.roles).map(([name, def]) => ({
       name,
-      permissions: def.permissions,
-      parentRole: def.parentRole,
+      permissions: def.grants,
+      parentRole: def.inherits,
       label: def.label,
       description: def.description,
     }));
@@ -775,8 +773,8 @@ export class Authz<P extends PermissionsConfig> {
     scope: Scope,
     definition: {
       name: string;
-      permissions: RolePermissionsInput<P>;
-      parentRole?: string;
+      grants: RoleGrantsMap<P>;
+      inherits?: string;
       label?: string;
       description?: string;
     }
@@ -784,8 +782,8 @@ export class Authz<P extends PermissionsConfig> {
     return await ctx.runMutation(this.component.mutations.createRoleDefinition, {
       name: definition.name,
       scope,
-      permissions: normalizeRolePermissions(definition.permissions),
-      parentRole: definition.parentRole,
+      permissions: normalizeRoleGrants(definition.grants),
+      parentRole: definition.inherits,
       isSystem: false,
       label: definition.label,
       description: definition.description,
@@ -800,16 +798,16 @@ export class Authz<P extends PermissionsConfig> {
     ctx: MutationCtx | ActionCtx,
     roleId: string,
     updates: {
-      permissions?: RolePermissionsInput<P>;
-      parentRole?: string | null;
+      grants?: RoleGrantsMap<P>;
+      inherits?: string | null;
       label?: string;
       description?: string;
     }
   ): Promise<boolean> {
     return await ctx.runMutation(this.component.mutations.updateRoleDefinition, {
       roleId: roleId as Id<"roleDefinitions">,
-      permissions: updates.permissions ? normalizeRolePermissions(updates.permissions) : undefined,
-      parentRole: updates.parentRole,
+      permissions: updates.grants ? normalizeRoleGrants(updates.grants) : undefined,
+      parentRole: updates.inherits,
       label: updates.label,
       description: updates.description,
       updatedBy: this.options.defaultActorId,
@@ -917,7 +915,7 @@ export class IndexedAuthz<P extends PermissionsConfig> extends Authz<P> {
     }
 
     const { role: parsedRoleName } = this.parseRole(role);
-    const rolePermissions = this.getRolePermissionsMap()[parsedRoleName] || [];
+    const rolePermissions = this.getRoleGrantsMap()[parsedRoleName] || [];
 
     return await ctx.runMutation(this.component.indexed.assignRoleWithCompute, {
       userId,
@@ -947,7 +945,7 @@ export class IndexedAuthz<P extends PermissionsConfig> extends Authz<P> {
     }
 
     const { role: parsedRoleName } = this.parseRole(role);
-    const rolePermissions = this.getRolePermissionsMap()[parsedRoleName] || [];
+    const rolePermissions = this.getRoleGrantsMap()[parsedRoleName] || [];
 
     return await ctx.runMutation(this.component.indexed.revokeRoleWithCompute, {
       userId,
@@ -1089,33 +1087,29 @@ export class IndexedAuthz<P extends PermissionsConfig> extends Authz<P> {
 /**
  * Define your Authorization configuration and get a typed Client.
  */
-export function defineAuthz<
+export function createAuthz<
   const P extends PermissionsConfig,
 >(
   component: ComponentApi,
-  config: AuthzConfigInput<P>,
+  config: AuthzConfig<P>,
   options?: AuthzOptions
 ) {
-  const authzConfig: AuthzConfig<P> = {
-    ...config,
-    roles: normalizeRoles(config.permissions, config.roles),
-  };
   if (options?.strategy === "indexed") {
-    const authz = new IndexedAuthz<P>(component, authzConfig, options);
+    const authz = new IndexedAuthz<P>(component, config, options);
     return {
       authz,
       P: createSelectors(config.permissions),
       permissions: config.permissions,
-      roles: authzConfig.roles,
+      roles: config.roles,
       policies: config.policies,
     };
   }
-  const authz = new Authz<P>(component, authzConfig, options);
+  const authz = new Authz<P>(component, config, options);
   return {
     authz,
     P: createSelectors(config.permissions),
     permissions: config.permissions,
-    roles: authzConfig.roles,
+    roles: config.roles,
     policies: config.policies,
   };
 }

@@ -2,7 +2,7 @@ export type { ComponentApi } from "../component/_generated/component.js";
 export type { PolicyContext } from "../component/helpers.js";
 
 export {
-  defineAuthz,
+  createAuthz,
   Authz,
   IndexedAuthz,
   PermissionBuilder,
@@ -10,22 +10,15 @@ export {
 
 export {
   createSelectors,
-  definePermissions,
-  defineRoles,
-  definePolicies,
+  authzConfig,
 } from "./config.js";
 
 export type {
   PermissionsConfig,
-  PermissionsMap,
-  PermissionsFromMap,
   ValidPermissionPattern,
-  RolePermissionsMap,
-  RolePermissionsInput,
+  RoleGrantsMap,
   RoleDefinition,
   RolesConfig,
-  RoleInput,
-  RolesConfigInput,
   NormalizedRoleDefinition,
   NormalizedRolesConfig,
   AttributeValue,
@@ -38,7 +31,7 @@ export type {
   PolicyDefinition,
   PoliciesConfig,
   AuthzConfig,
-  AuthzConfigInput,
+  AuthzConfigDefinition,
   AuthzOptions,
   RoleName,
   PermissionString,

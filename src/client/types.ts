@@ -9,14 +9,6 @@ export type PermissionsConfig<DataModel extends Record<string, unknown> = Record
   readonly [T in keyof DataModel & string]: readonly string[];
 };
 
-export type PermissionsMap = {
-  readonly [resource: string]: Record<string, boolean>;
-};
-
-export type PermissionsFromMap<M extends PermissionsMap> = {
-  readonly [R in keyof M & string]: readonly (keyof M[R] & string)[];
-};
-
 type AllActions<P extends PermissionsConfig> = P[keyof P & string][number] & string;
 
 /**
@@ -39,16 +31,9 @@ export type ValidPermissionPattern<P extends PermissionsConfig> =
 /**
  * Resource -> actions mapping for a role, e.g. { documents: ["read", "update"] }
  */
-export type RolePermissionsMap<P extends PermissionsConfig> = {
+export type RoleGrantsMap<P extends PermissionsConfig> = {
   readonly [K in keyof P & string]?: readonly (P[K][number] | "*")[];
 };
-
-/**
- * Role permission input can be a list of patterns or a resource-action map.
- */
-export type RolePermissionsInput<P extends PermissionsConfig> =
-  | readonly ValidPermissionPattern<P>[]
-  | RolePermissionsMap<P>;
 
 /**
  * Definition of a single role, with type-safe permissions.
@@ -56,10 +41,10 @@ export type RolePermissionsInput<P extends PermissionsConfig> =
  */
 export type RoleDefinition<P extends PermissionsConfig> = {
   /**
-   * List of permissions granted by this role.
-   * Must be valid permission strings like "resource:action", "resource:*", or "*".
+   * Resource-based grants for this role.
+   * Each entry is a list of allowed actions or "*".
    */
-  permissions: RolePermissionsInput<P>;
+  grants: RoleGrantsMap<P>;
   /**
    * Optional human-readable label
    */
@@ -71,7 +56,7 @@ export type RoleDefinition<P extends PermissionsConfig> = {
   /**
    * Optional parent role (static hierarchy).
    */
-  parentRole?: string;
+  inherits?: string;
 };
 
 /**
@@ -80,21 +65,14 @@ export type RoleDefinition<P extends PermissionsConfig> = {
  */
 export type RolesConfig<P extends PermissionsConfig> = Record<string, RoleDefinition<P>>;
 
-export type RoleInput<P extends PermissionsConfig> =
-  | RoleDefinition<P>
-  | RolePermissionsMap<P>
-  | readonly ValidPermissionPattern<P>[];
-
-export type RolesConfigInput<P extends PermissionsConfig> = Record<string, RoleInput<P>>;
-
 /**
  * Normalized role definition (permissions array only).
  */
 export type NormalizedRoleDefinition<P extends PermissionsConfig> = {
-  permissions: ValidPermissionPattern<P>[];
+  grants: ValidPermissionPattern<P>[];
   label?: string;
   description?: string;
-  parentRole?: string;
+  inherits?: string;
 };
 
 export type NormalizedRolesConfig<P extends PermissionsConfig> = Record<string, NormalizedRoleDefinition<P>>;
@@ -164,9 +142,9 @@ export interface AuthzConfig<P extends PermissionsConfig = PermissionsConfig> {
   allowCustomRoles?: boolean;
 }
 
-export interface AuthzConfigInput<P extends PermissionsConfig = PermissionsConfig> {
+export interface AuthzConfigDefinition<P extends PermissionsConfig = PermissionsConfig> {
   permissions: P;
-  roles: RolesConfigInput<P>;
+  roles: RolesConfig<P>;
   policies?: PoliciesConfig<P>;
   allowCustomRoles?: boolean;
 }

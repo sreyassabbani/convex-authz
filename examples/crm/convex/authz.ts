@@ -1,72 +1,51 @@
 import {
-  defineAuthz,
-  definePermissions,
-  defineRoles,
-  definePolicies,
+  authzConfig,
+  createAuthz,
 } from "@djpanda/convex-authz";
 
 import { components } from "./_generated/api";
 
-const permissions = definePermissions({
-  contacts: {
-    read: true,
-    create: true,
-    update: true,
-    delete: true,
+const config = authzConfig({
+  permissions: {
+    contacts: ["read", "create", "update", "delete"],
+    deals: ["read", "create", "update", "close"],
+    org: ["manage_members", "manage_billing"],
+    system: ["manage"],
   },
-  deals: {
-    read: true,
-    create: true,
-    update: true,
-    close: true,
-  },
-  org: {
-    manage_members: true,
-    manage_billing: true,
-  },
-  system: {
-    manage: true,
-  },
-});
-
-const roles = defineRoles(permissions, {
-  superuser: {
-    permissions: {
-      system: ["manage"],
-      org: ["*"],
-      contacts: ["*"],
-      deals: ["*"],
+  roles: {
+    superuser: {
+      grants: {
+        system: ["manage"],
+        org: ["*"],
+        contacts: ["*"],
+        deals: ["*"],
+      },
+      label: "Super User",
     },
-    label: "Super User",
-  },
-  "org:owner": {
-    permissions: {
-      org: ["*"],
-      contacts: ["*"],
-      deals: ["*"],
+    "org:owner": {
+      grants: {
+        org: ["*"],
+        contacts: ["*"],
+        deals: ["*"],
+      },
+      label: "Organization Owner",
     },
-    label: "Organization Owner",
-  },
-  "org:member": {
-    permissions: {
-      contacts: ["read"],
-      deals: ["read"],
+    "org:member": {
+      grants: {
+        contacts: ["read"],
+        deals: ["read"],
+      },
+      label: "Organization Member",
     },
-    label: "Organization Member",
   },
-});
-
-const policies = definePolicies(permissions, {
-  "deals:close": {
-    condition: (ctx) =>
-      ctx.hasRole("org:owner") || ctx.getAttribute<boolean>("canCloseDeals") === true,
-    message: "Closing deals requires org ownership or explicit clearance.",
+  policies: {
+    "deals:close": {
+      condition: (ctx) =>
+        ctx.hasRole("org:owner") || ctx.getAttribute<boolean>("canCloseDeals") === true,
+      message: "Closing deals requires org ownership or explicit clearance.",
+    },
   },
-});
-
-export const { authz, P } = defineAuthz(components.authz, {
-  permissions,
-  roles,
-  policies,
   allowCustomRoles: true,
 });
+
+export const { authz, P } = createAuthz(components.authz, config);

@@ -1,17 +1,14 @@
 import type {
+  AuthzConfig,
+  AuthzConfigDefinition,
   PermissionsConfig,
-  PermissionsMap,
-  PermissionsFromMap,
   RoleDefinition,
-  RoleInput,
-  RolePermissionsInput,
-  RolePermissionsMap,
-  RolesConfigInput,
+  RoleGrantsMap,
+  RolesConfig,
   NormalizedRoleDefinition,
   NormalizedRolesConfig,
   PermissionInput,
   PermissionString,
-  PoliciesConfig,
   Selectors,
   ValidPermissionPattern,
 } from "./types.js";
@@ -36,61 +33,18 @@ export function createSelectors<const P extends PermissionsConfig>(permissions: 
   return selectors as Selectors<P>;
 }
 
-export function definePermissions<const P extends PermissionsConfig>(permissions: P): P;
-export function definePermissions<const M extends PermissionsMap>(
-  permissions: M
-): PermissionsFromMap<M>;
-export function definePermissions(
-  permissions: PermissionsConfig | PermissionsMap
-) {
-  const normalized: Record<string, readonly string[]> = {};
-
-  for (const [resource, value] of Object.entries(permissions)) {
-    if (Array.isArray(value)) {
-      normalized[resource] = value;
-      continue;
-    }
-    if (value && typeof value === "object") {
-      normalized[resource] = Object.keys(value);
-      continue;
-    }
-    throw new Error(`Invalid permissions for resource "${resource}".`);
-  }
-
-  return normalized;
+export function authzConfig<const P extends PermissionsConfig>(
+  config: AuthzConfigDefinition<P>
+): AuthzConfig<P> {
+  return {
+    ...config,
+    roles: normalizeRoles(config.permissions, config.roles),
+  };
 }
 
-export function definePolicies<const P extends PermissionsConfig>(
-  policies: PoliciesConfig<P>
-): PoliciesConfig<P>;
-export function definePolicies<const P extends PermissionsConfig>(
-  _permissions: P,
-  policies: PoliciesConfig<P>
-): PoliciesConfig<P>;
-export function definePolicies<const P extends PermissionsConfig>(
-  arg1: P | PoliciesConfig<P>,
-  arg2?: PoliciesConfig<P>
-): PoliciesConfig<P> {
-  if (arg2) {
-    return arg2;
-  }
-  return arg1 as PoliciesConfig<P>;
-}
-
-export function defineRoles<const P extends PermissionsConfig>(
-  permissions: P,
-  roles: RolesConfigInput<P>
-): NormalizedRolesConfig<P> {
-  return normalizeRoles(permissions, roles);
-}
-
-export function normalizeRolePermissions<P extends PermissionsConfig>(
-  input: RolePermissionsInput<P>
+export function normalizeRoleGrants<P extends PermissionsConfig>(
+  input: RoleGrantsMap<P>
 ): ValidPermissionPattern<P>[] {
-  if (Array.isArray(input)) {
-    return Array.from(new Set(input));
-  }
-
   const patterns: string[] = [];
   for (const [resource, actions] of Object.entries(input)) {
     if (!actions) continue;
@@ -103,30 +57,19 @@ export function normalizeRolePermissions<P extends PermissionsConfig>(
 }
 
 function normalizeRoleDefinition<P extends PermissionsConfig>(
-  role: RoleInput<P>
+  role: RoleDefinition<P>
 ): NormalizedRoleDefinition<P> {
-  if (Array.isArray(role)) {
-    return { permissions: Array.from(new Set(role)) as ValidPermissionPattern<P>[] };
-  }
-
-  if (typeof role === "object" && role !== null && "permissions" in role) {
-    const def = role as RoleDefinition<P>;
-    return {
-      permissions: normalizeRolePermissions(def.permissions),
-      label: def.label,
-      description: def.description,
-      parentRole: def.parentRole,
-    };
-  }
-
   return {
-    permissions: normalizeRolePermissions(role as RolePermissionsMap<P>),
+    grants: normalizeRoleGrants(role.grants),
+    label: role.label,
+    description: role.description,
+    inherits: role.inherits,
   };
 }
 
 export function normalizeRoles<P extends PermissionsConfig>(
   permissions: P,
-  roles: RolesConfigInput<P>
+  roles: RolesConfig<P>
 ): NormalizedRolesConfig<P> {
   const normalized: NormalizedRolesConfig<P> = {};
   void permissions;

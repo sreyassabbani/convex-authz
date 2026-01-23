@@ -62,40 +62,36 @@ export default app;
 
 ```typescript
 // convex/authz.ts
-import { Authz, definePermissions, defineRoles } from "@djpanda/convex-authz";
+import { authzConfig, createAuthz } from "@djpanda/convex-authz";
 import { components } from "./_generated/api";
 
-// Step 1: Define permissions
-const permissions = definePermissions({
-  documents: {
-    create: true,
-    read: true,
-    update: true,
-    delete: true,
-  },
-  settings: {
-    view: true,
-    manage: true,
-  },
-});
-
-// Step 2: Define roles
-const roles = defineRoles(permissions, {
-  admin: {
+const config = authzConfig({
+  permissions: {
     documents: ["create", "read", "update", "delete"],
     settings: ["view", "manage"],
   },
-  editor: {
-    documents: ["create", "read", "update"],
-    settings: ["view"],
-  },
-  viewer: {
-    documents: ["read"],
+  roles: {
+    admin: {
+      grants: {
+        documents: ["*"],
+        settings: ["*"],
+      },
+    },
+    editor: {
+      grants: {
+        documents: ["create", "read", "update"],
+        settings: ["view"],
+      },
+    },
+    viewer: {
+      grants: {
+        documents: ["read"],
+      },
+    },
   },
 });
 
-// Step 3: Create the authz client
-export const authz = new Authz(components.authz, { permissions, roles });
+export const { authz, P } = createAuthz(components.authz, config);
 ```
 
 ### 3. Use in Your Functions
@@ -241,24 +237,35 @@ const attributes = await authz.getUserAttributes(ctx, userId);
 ### Defining Policies
 
 ```typescript
-import { definePolicies } from "@djpanda/convex-authz";
-
-const policies = definePolicies({
-  "documents:update": {
-    // User can update if they own the document
-    condition: (ctx) => ctx.resource?.ownerId === ctx.subject.userId,
-    message: "Only document owners can update",
+const config = authzConfig({
+  permissions: {
+    documents: ["read", "update"],
+    reports: ["view"],
   },
-  "reports:view": {
-    // Only engineering department with clearance >= 3
-    condition: (ctx) => 
-      ctx.subject.attributes.department === "engineering" &&
-      (ctx.subject.attributes.clearanceLevel as number) >= 3,
-    message: "Requires engineering department with clearance level 3+",
+  roles: {
+    editor: {
+      grants: {
+        documents: ["read", "update"],
+      },
+    },
+  },
+  policies: {
+    "documents:update": {
+      // User can update if they own the document
+      condition: (ctx) => ctx.resource?.ownerId === ctx.subject.userId,
+      message: "Only document owners can update",
+    },
+    "reports:view": {
+      // Only engineering department with clearance >= 3
+      condition: (ctx) =>
+        ctx.subject.attributes.department === "engineering" &&
+        (ctx.subject.attributes.clearanceLevel as number) >= 3,
+      message: "Requires engineering department with clearance level 3+",
+    },
   },
 });
 
-const authz = new Authz(components.authz, { permissions, roles, policies });
+const { authz } = createAuthz(components.authz, config);
 ```
 
 ### Policy Context

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { defineAuthz, type ComponentApi } from "./index.js";
+import { authzConfig, createAuthz, type ComponentApi } from "./index.js";
 import type { GenericQueryCtx, GenericDataModel } from "convex/server";
 
 type QueryCtx = Pick<GenericQueryCtx<GenericDataModel>, "runQuery">;
@@ -22,21 +22,24 @@ const mockComponent: ComponentApi = {
   },
 } as any as ComponentApi; // We still need a small cast here because we're not providing all methods, but using any for easier mocking in tests is generally acceptable IF it doesn't leak. However, I will try to make it cleaner.
 
-describe("defineAuthz", () => {
+describe("createAuthz", () => {
   it("should create an authz client with config and generators", () => {
-    const { authz, P } = defineAuthz(mockComponent, {
-      permissions: {
-        documents: ["read", "write"],
-      },
-      roles: {
-        admin: {
-          permissions: ["documents:*"],
+    const { authz, P } = createAuthz(
+      mockComponent,
+      authzConfig({
+        permissions: {
+          documents: ["read", "write"],
         },
-        "org:member": {
-          permissions: ["documents:read"],
+        roles: {
+          admin: {
+            grants: { documents: ["*"] },
+          },
+          "org:member": {
+            grants: { documents: ["read"] },
+          },
         },
-      },
-    });
+      })
+    );
 
     expect(authz).toBeDefined();
     expect(P).toBeDefined();
@@ -45,20 +48,24 @@ describe("defineAuthz", () => {
     expect(P.documents.read).toEqual({ resource: "documents", action: "read" });
     expect(P.documents.ALL).toEqual({ resource: "documents", action: "*" });
 
-    expect(authz.config.roles.admin.permissions).toEqual(["documents:*"]);
+    expect(authz.config.roles.admin.grants).toEqual(["documents:*"]);
 
     // Check internal mapping logic
     // @ts-expect-error - accessing protected method for testing
-    const map = authz.getRolePermissionsMap();
+    const map = authz.getRoleGrantsMap();
     expect(map.admin).toEqual(["documents:*"]);
     expect(map["org:member"]).toEqual(["documents:read"]);
   });
 
   it("should support indexed strategy", () => {
-    const { authz } = defineAuthz(mockComponent, {
-      permissions: {},
-      roles: {},
-    }, { strategy: "indexed" });
+    const { authz } = createAuthz(
+      mockComponent,
+      authzConfig({
+        permissions: {},
+        roles: {},
+      }),
+      { strategy: "indexed" }
+    );
 
     // constructor name might be minified, but we check prototype?
     expect(authz.constructor.name).toBe("IndexedAuthz");
@@ -66,16 +73,19 @@ describe("defineAuthz", () => {
 });
 
 describe("Authz Client", () => {
-  const { authz, P } = defineAuthz(mockComponent, {
-    permissions: {
-      threads: ["read"],
-      org: ["manage"]
-    },
-    roles: {
-      "org:admin": { permissions: [] },
-      "global_admin": { permissions: [] }
-    },
-  });
+  const { authz, P } = createAuthz(
+    mockComponent,
+    authzConfig({
+      permissions: {
+        threads: ["read"],
+        org: ["manage"]
+      },
+      roles: {
+        "org:admin": { grants: {} },
+        "global_admin": { grants: {} }
+      },
+    })
+  );
 
   describe("parseRole", () => {
     it("should parse global roles", () => {

@@ -22,11 +22,11 @@ The README promises RBAC, ABAC, ReBAC, O(1) lookups, and type safety. The implem
 - ReBAC is full graph relationships, including traversal, and supports indexed fast-path reads for relationship checks.
 - Indexed mode is Zanzibar-like: precomputed effective permissions and roles with O(1) checks, at the cost of heavier writes.
 
-We aligned the DX so the README is now reflected in the API:
+We aligned the DX so there is only one path:
 
-- `definePermissions` accepts either an array-based config or a boolean map and returns a typed, normalized shape.
-- `defineRoles` accepts roles defined as arrays, maps, or full role objects and normalizes them.
-- `definePolicies` can be typed against your permissions and matched with wildcard patterns.
+- `authzConfig` is the single config builder and it accepts one shape.
+- Roles always use a `grants` map (resource → actions); no multiple input formats.
+- Policies are always keyed by permission patterns and evaluated explicitly.
 
 The intent is to make the README examples feel like real code you can ship, not aspirational pseudocode.
 
@@ -50,45 +50,39 @@ Configuration and usage are separate on purpose. Configuration is a pure, typed 
 
 ```ts
 import {
-  defineAuthz,
-  definePermissions,
-  defineRoles,
-  definePolicies,
+  authzConfig,
+  createAuthz,
 } from "@djpanda/convex-authz";
 import { components } from "./_generated/api";
 
-const permissions = definePermissions({
-  documents: { read: true, write: true, delete: true },
-  org: { manage_members: true, manage_billing: true },
-});
-
-const roles = defineRoles(permissions, {
-  admin: {
-    permissions: {
-      documents: ["*"],
-      org: ["*"],
+const config = authzConfig({
+  permissions: {
+    documents: ["read", "write", "delete"],
+    org: ["manage_members", "manage_billing"],
+  },
+  roles: {
+    admin: {
+      grants: {
+        documents: ["*"],
+        org: ["*"],
+      },
+    },
+    "org:member": {
+      grants: {
+        documents: ["read"],
+      },
     },
   },
-  "org:member": {
-    permissions: {
-      documents: ["read"],
+  policies: {
+    "documents:delete": {
+      condition: (ctx) => ctx.hasRole("admin") || ctx.getAttribute("canDelete") === true,
+      message: "Deleting documents requires admin or explicit clearance.",
     },
   },
-});
-
-const policies = definePolicies(permissions, {
-  "documents:delete": {
-    condition: (ctx) => ctx.hasRole("admin") || ctx.getAttribute("canDelete") === true,
-    message: "Deleting documents requires admin or explicit clearance.",
-  },
-});
-
-export const { authz, P } = defineAuthz(components.authz, {
-  permissions,
-  roles,
-  policies,
   allowCustomRoles: true,
 });
+
+export const { authz, P } = createAuthz(components.authz, config);
 ```
 
 Now the usage feels like intent, not plumbing:
@@ -112,7 +106,7 @@ const decision = await authz.explain(ctx, userId, P.documents.delete, {
 DX decisions embedded in that surface:
 
 - `P` is always typed from your permissions; no “wrong string” footguns.
-- `defineRoles` accepts multiple shapes so you can start simple and grow.
+- `authzConfig` is the only configuration entry point, so there is no “which format?” debate.
 - `PermissionBuilder` is composable and discoverable, with clear escape hatches.
 - `require` throws a structured `ConvexError` with a reason and context.
 
@@ -145,7 +139,7 @@ You do not change your application code; you change a strategy flag.
 ## Real-world pain and the fixes
 
 Pain: “We ship 100 features, and every permission string drifts.”
-Fix: `definePermissions`, `P` selectors, and role definitions that are validated by the compiler.
+Fix: `authzConfig`, `P` selectors, and role definitions that are validated by the compiler.
 
 Pain: “We can not explain why access was denied in production.”
 Fix: `explain` with a structured `CheckResult` and optional audit logs.
@@ -176,14 +170,19 @@ await authz.require(ctx, userId, P.documents.write);
 
 If you ever need a string, it is still allowed. But default to selectors so the compiler keeps you honest.
 
-### 2) Use parent roles for clean hierarchies
+### 2) Use inheritance for clean hierarchies
 
 ```ts
-const roles = defineRoles(permissions, {
-  viewer: { permissions: { documents: [\"read\"] } },
-  editor: {
-    parentRole: \"viewer\",
-    permissions: { documents: [\"write\"] },
+const config = authzConfig({
+  permissions: {
+    documents: [\"read\", \"write\"],
+  },
+  roles: {
+    viewer: { grants: { documents: [\"read\"] } },
+    editor: {
+      inherits: \"viewer\",
+      grants: { documents: [\"write\"] },
+    },
   },
 });
 ```
@@ -193,11 +192,19 @@ This avoids repeating “viewer” permissions everywhere and keeps diffs tight.
 ### 3) Use wildcard policies sparingly, but deliberately
 
 ```ts
-const policies = definePolicies(permissions, {
-  \"*:*\": {
-    effect: \"deny\",
-    condition: (ctx) => ctx.getAttribute(\"suspended\") === true,
-    message: \"Account suspended.\",
+const config = authzConfig({
+  permissions: {
+    documents: [\"read\", \"write\"],
+  },
+  roles: {
+    viewer: { grants: { documents: [\"read\"] } },
+  },
+  policies: {
+    \"*:*\": {
+      effect: \"deny\",
+      condition: (ctx) => ctx.getAttribute(\"suspended\") === true,
+      message: \"Account suspended.\",
+    },
   },
 });
 ```
@@ -221,10 +228,11 @@ This is the difference between a quick fix and a two-day permission hunt.
 ### 5) Switch strategies without changing app logic
 
 ```ts
-export const { authz, P } = defineAuthz(components.authz, {
-  permissions,
-  roles,
-}, { strategy: \"indexed\" });
+export const { authz, P } = createAuthz(
+  components.authz,
+  authzConfig({ permissions, roles }),
+  { strategy: \"indexed\" }
+);
 ```
 
 The API stays constant. The performance profile changes.
